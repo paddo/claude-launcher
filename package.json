@@ -1,0 +1,29 @@
+{
+  "name": "claude-launcher",
+  "version": "0.1.0",
+  "description": "Launch Claude Code with multiple backends (Anthropic, OpenRouter)",
+  "type": "module",
+  "bin": {
+    "claude-launcher": "./dist/claude-launcher"
+  },
+  "scripts": {
+    "build": "bun build ./src/index.ts --compile --outfile dist/claude-launcher",
+    "dev": "bun run src/index.ts"
+  },
+  "keywords": ["claude", "claude-code", "openrouter", "ai", "cli"],
+  "author": "paddo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paddo/claude-launcher"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.1.0"
+  }
+}
