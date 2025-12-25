@@ -7,6 +7,7 @@ export interface OpenRouterModel {
     completion: string;
   };
   supported_parameters?: string[];
+  hasExacto?: boolean;
 }
 
 interface ModelsResponse {
@@ -21,9 +22,18 @@ export async function fetchModels(): Promise<OpenRouterModel[]> {
 }
 
 export function filterAgenticModels(models: OpenRouterModel[]): OpenRouterModel[] {
-  return models.filter(
-    (m) => m.supported_parameters?.includes("tools") || m.supported_parameters?.includes("tool_choice")
+  // Find all exacto variant IDs
+  const exactoIds = new Set(
+    models.filter((m) => m.id.endsWith(":exacto")).map((m) => m.id.replace(/:exacto$/, ""))
   );
+
+  return models
+    .filter(
+      (m) =>
+        !m.id.endsWith(":exacto") &&
+        (m.supported_parameters?.includes("tools") || m.supported_parameters?.includes("tool_choice"))
+    )
+    .map((m) => ({ ...m, hasExacto: exactoIds.has(m.id) }));
 }
 
 export function getNewModels(models: OpenRouterModel[], seenIds: string[]): OpenRouterModel[] {

@@ -7,8 +7,12 @@ export type Backend = "anthropic" | "openrouter";
 export interface Config {
   backend?: Backend;
   selectedModel?: string;
+  sonnetModel?: string;
+  opusModel?: string;
+  haikuModel?: string;
   lastModelFetch?: string;
   seenModels?: string[];
+  openrouterApiKey?: string;
 }
 
 const CONFIG_DIR = join(homedir(), ".config", "claude-launcher");

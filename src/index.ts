@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 import { spawn } from "child_process";
+import { confirm } from "@inquirer/prompts";
 import { getConfig, saveConfig, type Backend } from "./config";
 import { fetchModels, filterAgenticModels, getNewModels } from "./models";
 import { pickBackend, pickModel } from "./picker";
+import { login } from "./auth";
 
 const args = process.argv.slice(2);
 
@@ -12,6 +14,8 @@ function parseArgs() {
     anthropic: false,
     model: false,
     help: false,
+    login: false,
+    logout: false,
   };
   const passthrough: string[] = [];
   let seenDash = false;
@@ -29,6 +33,10 @@ function parseArgs() {
       flags.model = true;
     } else if (arg === "--help" || arg === "-h") {
       flags.help = true;
+    } else if (arg === "login") {
+      flags.login = true;
+    } else if (arg === "logout") {
+      flags.logout = true;
     } else {
       passthrough.push(arg);
     }
@@ -37,10 +45,19 @@ function parseArgs() {
   return { flags, passthrough };
 }
 
+function launchClaude(passthrough: string[], env?: NodeJS.ProcessEnv) {
+  const child = spawn("claude", passthrough, { env, stdio: "inherit" });
+  child.on("exit", (code) => process.exit(code || 0));
+}
+
 function showHelp() {
   console.log(`claude-launcher - Launch Claude Code with multiple backends
 
-Usage: claude-launcher [options] [-- claude-args...]
+Usage: claude-launcher [command] [options] [-- claude-args...]
+
+Commands:
+  login             Authenticate with OpenRouter
+  logout            Clear stored OpenRouter API key
 
 Options:
   -o, --openrouter  Use OpenRouter backend
@@ -49,8 +66,8 @@ Options:
   -h, --help        Show this help
 
 Examples:
+  claude-launcher login              # authenticate with OpenRouter
   claude-launcher                    # uses last backend/model
-  claude-launcher --openrouter       # OpenRouter with saved model
   claude-launcher -m                 # pick a model
   claude-launcher -- --resume        # pass args to claude`);
 }
@@ -64,6 +81,25 @@ async function main() {
   }
 
   const config = getConfig();
+
+  // Handle login command
+  if (flags.login) {
+    const apiKey = await login();
+    config.openrouterApiKey = apiKey;
+    config.backend = "openrouter";
+    saveConfig(config);
+    console.log("Logged in successfully!");
+    process.exit(0);
+  }
+
+  // Handle logout command
+  if (flags.logout) {
+    delete config.openrouterApiKey;
+    saveConfig(config);
+    console.log("Logged out.");
+    process.exit(0);
+  }
+
   let backend: Backend;
   let selectedModel = config.selectedModel;
 
@@ -82,10 +118,23 @@ async function main() {
 
   // OpenRouter-specific setup
   if (backend === "openrouter") {
-    const apiKey = process.env.OPENROUTER_API_KEY;
+    let apiKey = config.openrouterApiKey;
+
+    // Check for env var if no stored key
+    if (!apiKey && process.env.OPENROUTER_API_KEY) {
+      const useEnv = await confirm({ message: "Use existing OPENROUTER_API_KEY from environment?" });
+      if (useEnv) {
+        apiKey = process.env.OPENROUTER_API_KEY;
+        config.openrouterApiKey = apiKey;
+        saveConfig(config);
+      }
+    }
+
     if (!apiKey) {
-      console.error("Error: OPENROUTER_API_KEY not set");
-      process.exit(1);
+      console.log("No API key found. Starting login...\n");
+      apiKey = await login();
+      config.openrouterApiKey = apiKey;
+      saveConfig(config);
     }
 
     // Fetch models
@@ -111,6 +160,17 @@ async function main() {
     if (flags.model || !selectedModel) {
       selectedModel = await pickModel(models, selectedModel);
       config.selectedModel = selectedModel;
+
+      const configureRoles = await confirm({
+        message: "Configure role models?",
+        default: false,
+      });
+
+      if (configureRoles) {
+        config.sonnetModel = await pickModel(models, config.sonnetModel, "Sonnet (lighter tasks)");
+        config.opusModel = await pickModel(models, config.opusModel, "Opus (complex tasks)");
+        config.haikuModel = await pickModel(models, config.haikuModel, "Haiku (quick/cheap)");
+      }
     }
 
     saveConfig(config);
@@ -119,29 +179,27 @@ async function main() {
     const env = {
       ...process.env,
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
-      ANTHROPIC_API_KEY: apiKey,
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: apiKey,
       ANTHROPIC_MODEL: selectedModel,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: config.sonnetModel || selectedModel,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: config.opusModel || selectedModel,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: config.haikuModel || selectedModel,
     };
 
     console.log(`\nLaunching claude with ${selectedModel}...\n`);
-    const child = spawn("claude", passthrough, {
-      env,
-      stdio: "inherit",
-    });
-
-    child.on("exit", (code) => process.exit(code || 0));
+    launchClaude(passthrough, env);
   } else {
     // Anthropic - just launch claude
     console.log("Launching claude...\n");
-    const child = spawn("claude", passthrough, {
-      stdio: "inherit",
-    });
-
-    child.on("exit", (code) => process.exit(code || 0));
+    launchClaude(passthrough);
   }
 }
 
 main().catch((err) => {
+  if (err.name === "ExitPromptError") {
+    process.exit(130);
+  }
   console.error(err);
   process.exit(1);
 });

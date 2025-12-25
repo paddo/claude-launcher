@@ -15,20 +15,23 @@ export async function pickBackend(): Promise<Backend> {
 
 export async function pickModel(
   models: OpenRouterModel[],
-  currentModel?: string
+  currentModel?: string,
+  label?: string
 ): Promise<string> {
   const choices = models.map((m) => ({
-    name: `${m.name} [${formatContext(m.context_length)}] ${formatPrice(m)}`,
-    value: m.id,
-    description: m.id,
+    name: `${m.hasExacto ? "[exacto] " : ""}${m.name} [${formatContext(m.context_length)}] ${formatPrice(m)}`,
+    value: m.hasExacto ? `${m.id}:exacto` : m.id,
+    description: m.hasExacto ? `${m.id}:exacto` : m.id,
   }));
 
-  const defaultChoice = currentModel
-    ? choices.find((c) => c.value === currentModel)
+  // Handle currentModel that might be exacto variant
+  const baseCurrentModel = currentModel?.replace(/:exacto$/, "");
+  const defaultChoice = baseCurrentModel
+    ? choices.find((c) => c.value === currentModel || c.value === `${baseCurrentModel}:exacto`)
     : undefined;
 
   return search({
-    message: "Select model:",
+    message: label ? `${label}:` : "Select model:",
     source: async (input) => {
       if (!input) return choices.slice(0, 20);
       const lower = input.toLowerCase();
