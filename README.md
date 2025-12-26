@@ -18,6 +18,12 @@ Launch Claude Code with multiple backends (Anthropic, OpenRouter).
 
 ```bash
 npm install -g claude-launcher
+# or
+pnpm add -g claude-launcher
+# or
+yarn global add claude-launcher
+# or
+bun add -g claude-launcher
 ```
 
 Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed.
