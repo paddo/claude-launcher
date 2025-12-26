@@ -50,4 +50,9 @@ jobs:
           bun install
           bun run check
           bun run build
-          npm publish --access public --provenance
+          VERSION=$(jq -r .version package.json)
+          if [[ "$VERSION" == *-* ]]; then
+            npm publish --access public --provenance --tag beta
+          else
+            npm publish --access public --provenance
+          fi
