@@ -109,12 +109,19 @@ export async function exchangeCodeForKey(code: string, verifier: string): Promis
   return data.key;
 }
 
+function openBrowser(url: string) {
+  const platform = process.platform;
+  const cmd = platform === "darwin" ? "open" : platform === "win32" ? "cmd" : "xdg-open";
+  const args = platform === "win32" ? ["/c", "start", "", url] : [url];
+  Bun.spawn([cmd, ...args]);
+}
+
 export async function login(): Promise<string> {
   const { verifier, challenge } = generatePKCE();
   const authUrl = getAuthUrl(challenge);
 
   console.log("Opening browser for authentication...");
-  Bun.spawn(["open", authUrl]);
+  openBrowser(authUrl);
 
   console.log("Waiting for callback...");
   const code = await waitForCallback();

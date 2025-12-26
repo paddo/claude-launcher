@@ -8,7 +8,7 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir dist --target node && sed -i '' '1s|.*|#!/usr/bin/env node|' dist/index.js",
+    "build": "bun build ./src/index.ts --outdir dist --target node && sed -i.bak '1s|.*|#!/usr/bin/env node|' dist/index.js && rm dist/index.js.bak",
     "build:binary": "bun build ./src/index.ts --compile --outfile dist/claude-launcher",
     "clean": "rm -rf dist",
     "dev": "bun run src/index.ts",
