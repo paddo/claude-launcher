@@ -1,15 +1,17 @@
 {
   "name": "claude-launcher",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.4",
   "description": "Launch Claude Code with multiple backends (Anthropic, OpenRouter)",
   "type": "module",
   "bin": {
-    "claude-launcher": "./bin/claude-launcher"
+    "claude-launcher": "./dist/index.js"
   },
-  "files": ["src", "bin"],
+  "files": ["dist"],
   "scripts": {
-    "build": "bun build ./src/index.ts --compile --outfile dist/claude-launcher",
-    "dev": "bun run src/index.ts"
+    "build": "bun build ./src/index.ts --outdir dist --target node && sed -i '' '1s|.*|#!/usr/bin/env node|' dist/index.js",
+    "build:binary": "bun build ./src/index.ts --compile --outfile dist/claude-launcher",
+    "dev": "bun run src/index.ts",
+    "prepublishOnly": "bun run build"
   },
   "keywords": ["claude", "claude-code", "openrouter", "ai", "cli"],
   "author": "paddo",
