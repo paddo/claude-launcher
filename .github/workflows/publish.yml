@@ -46,9 +46,8 @@ jobs:
       - name: Build and publish
         if: steps.check.outputs.exists == 'false'
         run: |
+          npm install -g npm@latest
           bun install
           bun run check
           bun run build
           npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
