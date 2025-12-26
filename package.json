@@ -1,11 +1,12 @@
 {
   "name": "claude-launcher",
-  "version": "0.1.0",
+  "version": "0.1.0-beta.2",
   "description": "Launch Claude Code with multiple backends (Anthropic, OpenRouter)",
   "type": "module",
   "bin": {
-    "claude-launcher": "./dist/claude-launcher"
+    "claude-launcher": "./bin/claude-launcher"
   },
+  "files": ["src", "bin"],
   "scripts": {
     "build": "bun build ./src/index.ts --compile --outfile dist/claude-launcher",
     "dev": "bun run src/index.ts"
