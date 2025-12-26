@@ -105,7 +105,7 @@ export async function exchangeCodeForKey(code: string, verifier: string): Promis
     throw new Error(`Key exchange failed: ${text}`);
   }
 
-  const data = await res.json();
+  const data = (await res.json()) as { key: string };
   return data.key;
 }
 

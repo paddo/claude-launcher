@@ -10,8 +10,13 @@
   "scripts": {
     "build": "bun build ./src/index.ts --outdir dist --target node && sed -i '' '1s|.*|#!/usr/bin/env node|' dist/index.js",
     "build:binary": "bun build ./src/index.ts --compile --outfile dist/claude-launcher",
+    "clean": "rm -rf dist",
     "dev": "bun run src/index.ts",
-    "prepublishOnly": "bun run build"
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun run lint",
+    "prepublishOnly": "bun run check && bun run build"
   },
   "keywords": ["claude", "claude-code", "openrouter", "ai", "cli"],
   "author": "paddo",
@@ -21,7 +26,12 @@
     "url": "https://github.com/paddo/claude-launcher"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@eslint/js": "^9.39.2",
+    "@types/bun": "latest",
+    "@typescript-eslint/eslint-plugin": "^8",
+    "@typescript-eslint/parser": "^8",
+    "eslint": "^9",
+    "typescript-eslint": "^8.50.1"
   },
   "peerDependencies": {
     "typescript": "^5"

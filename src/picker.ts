@@ -24,12 +24,6 @@ export async function pickModel(
     description: m.hasExacto ? `${m.id}:exacto` : m.id,
   }));
 
-  // Handle currentModel that might be exacto variant
-  const baseCurrentModel = currentModel?.replace(/:exacto$/, "");
-  const defaultChoice = baseCurrentModel
-    ? choices.find((c) => c.value === currentModel || c.value === `${baseCurrentModel}:exacto`)
-    : undefined;
-
   return search({
     message: label ? `${label}:` : "Select model:",
     source: async (input) => {
@@ -41,6 +35,5 @@ export async function pickModel(
           c.value.toLowerCase().includes(lower)
       );
     },
-    default: defaultChoice?.value,
   });
 }

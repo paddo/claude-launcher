@@ -17,7 +17,7 @@ interface ModelsResponse {
 export async function fetchModels(): Promise<OpenRouterModel[]> {
   const res = await fetch("https://openrouter.ai/api/v1/models");
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
-  const data: ModelsResponse = await res.json();
+  const data = (await res.json()) as ModelsResponse;
   return data.data;
 }
 
