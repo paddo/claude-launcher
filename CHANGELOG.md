@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2025-01-14
+
+### Fixed
+- Replace Bun-specific APIs with Node.js equivalents for npm compatibility
+
 ## [0.1.0-beta.4] - 2025-12-26
 
 ### Added
@@ -31,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Model picker with search
 - Config persistence
 
-[Unreleased]: https://github.com/paddo/claude-launcher/compare/v0.1.0-beta.4...HEAD
+[Unreleased]: https://github.com/paddo/claude-launcher/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/paddo/claude-launcher/compare/v0.1.0-beta.4...v0.1.1
 [0.1.0-beta.4]: https://github.com/paddo/claude-launcher/compare/v0.1.0...v0.1.0-beta.4
 [0.1.0]: https://github.com/paddo/claude-launcher/releases/tag/v0.1.0

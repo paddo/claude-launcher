@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from "crypto";
+import { createServer, type IncomingMessage, type ServerResponse } from "http";
+import { spawn } from "child_process";
 
 const CALLBACK_PORT = 8787;
 const CALLBACK_URL = `http://localhost:${CALLBACK_PORT}`;
@@ -18,19 +20,7 @@ export function getAuthUrl(challenge: string): string {
   return `https://openrouter.ai/auth?${params}`;
 }
 
-export async function waitForCallback(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const server = Bun.serve({
-      port: CALLBACK_PORT,
-      fetch(req) {
-        const url = new URL(req.url);
-        const code = url.searchParams.get("code");
-
-        if (code) {
-          resolve(code);
-          setTimeout(() => server.stop(), 100);
-          return new Response(
-            `<!DOCTYPE html>
+const SUCCESS_HTML = `<!DOCTYPE html>
 <html>
 <head>
   <title>claude-launcher</title>
@@ -71,19 +61,32 @@ export async function waitForCallback(): Promise<string> {
     <p>You can close this window</p>
   </div>
 </body>
-</html>`,
-            { headers: { "Content-Type": "text/html" } }
-          );
-        }
+</html>`;
 
-        reject(new Error("No code received"));
-        setTimeout(() => server.stop(), 100);
-        return new Response("No code received", { status: 400 });
-      },
+export async function waitForCallback(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const url = new URL(req.url ?? "/", `http://localhost:${CALLBACK_PORT}`);
+      const code = url.searchParams.get("code");
+
+      if (code) {
+        resolve(code);
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(SUCCESS_HTML);
+        setTimeout(() => server.close(), 100);
+        return;
+      }
+
+      reject(new Error("No code received"));
+      res.writeHead(400);
+      res.end("No code received");
+      setTimeout(() => server.close(), 100);
     });
 
+    server.listen(CALLBACK_PORT);
+
     setTimeout(() => {
-      server.stop();
+      server.close();
       reject(new Error("Auth timeout"));
     }, 120000);
   });
@@ -113,7 +116,7 @@ function openBrowser(url: string) {
   const platform = process.platform;
   const cmd = platform === "darwin" ? "open" : platform === "win32" ? "cmd" : "xdg-open";
   const args = platform === "win32" ? ["/c", "start", "", url] : [url];
-  Bun.spawn([cmd, ...args]);
+  spawn(cmd, args, { detached: true, stdio: "ignore" }).unref();
 }
 
 export async function login(): Promise<string> {
