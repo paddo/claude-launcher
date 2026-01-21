@@ -15,6 +15,9 @@ export interface Config {
   openrouterApiKey?: string;
   ollamaHost?: string;
   ollamaModel?: string;
+  ollamaSonnetModel?: string;
+  ollamaOpusModel?: string;
+  ollamaHaikuModel?: string;
 }
 
 const CONFIG_DIR = join(homedir(), ".config", "claude-launcher");

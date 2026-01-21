@@ -236,16 +236,31 @@ async function main() {
       ollamaModel = await pickOllamaModel(models);
       config.ollamaModel = ollamaModel;
       config.backend = "ollama";
+
+      const configureRoles = await confirm({
+        message: "Configure role models? (ensures all requests stay local)",
+        default: true,
+      });
+
+      if (configureRoles) {
+        config.ollamaSonnetModel = await pickOllamaModel(models, "Sonnet (lighter tasks)");
+        config.ollamaOpusModel = await pickOllamaModel(models, "Opus (complex tasks)");
+        config.ollamaHaikuModel = await pickOllamaModel(models, "Haiku (quick/cheap)");
+      }
+
       saveConfig(config);
     }
 
-    // Launch with Ollama env vars
+    // Launch with Ollama env vars - set all role models to stay fully local
     const env = {
       ...process.env,
       ANTHROPIC_BASE_URL: host,
       ANTHROPIC_API_KEY: "",
       ANTHROPIC_AUTH_TOKEN: "ollama",
       ANTHROPIC_MODEL: ollamaModel,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: config.ollamaSonnetModel || ollamaModel,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: config.ollamaOpusModel || ollamaModel,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: config.ollamaHaikuModel || ollamaModel,
     };
 
     console.log(`\nLaunching claude with ${ollamaModel} (Ollama)...\n`);

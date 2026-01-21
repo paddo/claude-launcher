@@ -39,14 +39,14 @@ export async function pickModel(
   });
 }
 
-export async function pickOllamaModel(models: OllamaModel[]): Promise<string> {
+export async function pickOllamaModel(models: OllamaModel[], label?: string): Promise<string> {
   const choices = models.map((m) => ({
     name: `${m.name} [${formatOllamaSize(m.size)}]`,
     value: m.name,
   }));
 
   return select({
-    message: "Select Ollama model:",
+    message: label ? `${label}:` : "Select Ollama model:",
     choices,
   });
 }
