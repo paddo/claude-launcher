@@ -2,8 +2,8 @@
 import { spawn } from "child_process";
 import { confirm } from "@inquirer/prompts";
 import { getConfig, saveConfig, type Backend } from "./config";
-import { fetchModels, filterAgenticModels, getNewModels } from "./models";
-import { pickBackend, pickModel } from "./picker";
+import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels } from "./models";
+import { pickBackend, pickModel, pickOllamaModel } from "./picker";
 import { login } from "./auth";
 
 const args = process.argv.slice(2);
@@ -12,6 +12,7 @@ function parseArgs() {
   const flags = {
     openrouter: false,
     anthropic: false,
+    ollama: false,
     model: false,
     help: false,
     login: false,
@@ -29,6 +30,8 @@ function parseArgs() {
       flags.openrouter = true;
     } else if (arg === "--anthropic" || arg === "-a") {
       flags.anthropic = true;
+    } else if (arg === "--ollama" || arg === "-l") {
+      flags.ollama = true;
     } else if (arg === "--model" || arg === "-m") {
       flags.model = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -62,6 +65,7 @@ Commands:
 Options:
   -o, --openrouter  Use OpenRouter backend
   -a, --anthropic   Use Anthropic backend
+  -l, --ollama      Use Ollama backend (local)
   -m, --model       Show model picker (implies --openrouter)
   -h, --help        Show this help
 
@@ -69,6 +73,7 @@ Examples:
   claude-launcher login              # authenticate with OpenRouter
   claude-launcher                    # uses last backend/model
   claude-launcher -m                 # pick a model
+  claude-launcher -l                 # use Ollama local backend
   claude-launcher -- --resume        # pass args to claude`);
 }
 
@@ -106,6 +111,8 @@ async function main() {
   // Determine backend
   if (flags.anthropic) {
     backend = "anthropic";
+  } else if (flags.ollama) {
+    backend = "ollama";
   } else if (flags.openrouter || flags.model) {
     backend = "openrouter";
   } else if (config.backend) {
@@ -188,6 +195,60 @@ async function main() {
     };
 
     console.log(`\nLaunching claude with ${selectedModel}...\n`);
+    launchClaude(passthrough, env);
+  } else if (backend === "ollama") {
+    const host = config.ollamaHost || "http://localhost:11434";
+
+    // Check Ollama is running
+    console.log("Checking Ollama...");
+    let allModels;
+    try {
+      allModels = await fetchOllamaModels(host);
+    } catch {
+      console.error(`Failed to connect to Ollama at ${host}`);
+      console.error("Make sure Ollama is running: ollama serve");
+      process.exit(1);
+    }
+
+    if (allModels.length === 0) {
+      console.error("No models found. Pull a model first: ollama pull <model>");
+      process.exit(1);
+    }
+
+    // Filter to tool-capable models
+    console.log("Checking model capabilities...");
+    const models = await filterToolCapableOllamaModels(host, allModels);
+
+    if (models.length === 0) {
+      console.error("No tool-capable models found.");
+      console.error("Try: ollama pull qwen2.5:7b");
+      process.exit(1);
+    }
+
+    const hidden = allModels.length - models.length;
+    if (hidden > 0) {
+      console.log(`Showing ${models.length} tool-capable model(s) (${hidden} hidden - no tool support)\n`);
+    }
+
+    // Model selection
+    let ollamaModel = config.ollamaModel;
+    if (!ollamaModel || !models.some((m) => m.name === ollamaModel)) {
+      ollamaModel = await pickOllamaModel(models);
+      config.ollamaModel = ollamaModel;
+      config.backend = "ollama";
+      saveConfig(config);
+    }
+
+    // Launch with Ollama env vars
+    const env = {
+      ...process.env,
+      ANTHROPIC_BASE_URL: host,
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "ollama",
+      ANTHROPIC_MODEL: ollamaModel,
+    };
+
+    console.log(`\nLaunching claude with ${ollamaModel} (Ollama)...\n`);
     launchClaude(passthrough, env);
   } else {
     // Anthropic - just launch claude

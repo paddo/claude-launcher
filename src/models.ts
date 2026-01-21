@@ -14,6 +14,58 @@ interface ModelsResponse {
   data: OpenRouterModel[];
 }
 
+export interface OllamaModel {
+  name: string;
+  size: number;
+  modified_at: string;
+}
+
+interface OllamaTagsResponse {
+  models: OllamaModel[];
+}
+
+export async function fetchOllamaModels(host: string): Promise<OllamaModel[]> {
+  const res = await fetch(`${host}/api/tags`);
+  if (!res.ok) throw new Error(`Failed to fetch Ollama models: ${res.status}`);
+  const data = (await res.json()) as OllamaTagsResponse;
+  return data.models || [];
+}
+
+export function formatOllamaSize(size: number): string {
+  const gb = size / 1_000_000_000;
+  if (gb >= 1) return `${gb.toFixed(1)}GB`;
+  return `${(size / 1_000_000).toFixed(0)}MB`;
+}
+
+interface OllamaShowResponse {
+  capabilities?: string[];
+}
+
+async function hasToolCapability(host: string, modelName: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${host}/api/show`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: modelName }),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as OllamaShowResponse;
+    return data.capabilities?.includes("tools") ?? false;
+  } catch {
+    return false;
+  }
+}
+
+export async function filterToolCapableOllamaModels(
+  host: string,
+  models: OllamaModel[]
+): Promise<OllamaModel[]> {
+  const results = await Promise.all(
+    models.map(async (m) => ({ model: m, hasTools: await hasToolCapability(host, m.name) }))
+  );
+  return results.filter((r) => r.hasTools).map((r) => r.model);
+}
+
 export async function fetchModels(): Promise<OpenRouterModel[]> {
   const res = await fetch("https://openrouter.ai/api/v1/models");
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
