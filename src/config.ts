@@ -2,7 +2,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 
-export type Backend = "anthropic" | "openrouter" | "ollama";
+export type Backend = "anthropic" | "openrouter" | "ollama" | "nim";
 
 export interface Config {
   backend?: Backend;
@@ -18,6 +18,12 @@ export interface Config {
   ollamaSonnetModel?: string;
   ollamaOpusModel?: string;
   ollamaHaikuModel?: string;
+  nimApiKey?: string;
+  nimHost?: string;
+  nimModel?: string;
+  nimSonnetModel?: string;
+  nimOpusModel?: string;
+  nimHaikuModel?: string;
 }
 
 const CONFIG_DIR = join(homedir(), ".config", "claude-launcher");

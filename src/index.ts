@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 import { spawn } from "child_process";
-import { confirm } from "@inquirer/prompts";
+import { confirm, input } from "@inquirer/prompts";
 import { getConfig, saveConfig, type Backend } from "./config";
-import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels } from "./models";
-import { pickBackend, pickModel, pickOllamaModel } from "./picker";
+import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchNimModels } from "./models";
+import { pickBackend, pickModel, pickOllamaModel, pickNimModel } from "./picker";
 import { login } from "./auth";
+import { startProxy } from "./proxy";
 
 const args = process.argv.slice(2);
 
@@ -13,7 +14,8 @@ function parseArgs() {
     openrouter: false,
     anthropic: false,
     ollama: false,
-    model: false,
+    nim: false,
+    backend: false,
     help: false,
     login: false,
     logout: false,
@@ -32,8 +34,10 @@ function parseArgs() {
       flags.anthropic = true;
     } else if (arg === "--ollama" || arg === "-l") {
       flags.ollama = true;
-    } else if (arg === "--model" || arg === "-m") {
-      flags.model = true;
+    } else if (arg === "--nim" || arg === "-n") {
+      flags.nim = true;
+    } else if (arg === "--backend" || arg === "-b" || arg === "--model" || arg === "-m") {
+      flags.backend = true;
     } else if (arg === "--help" || arg === "-h") {
       flags.help = true;
     } else if (arg === "login") {
@@ -63,17 +67,20 @@ Commands:
   logout            Clear stored OpenRouter API key
 
 Options:
+  -b, --backend     Pick backend and model interactively
+  -m, --model       Alias for -b
   -o, --openrouter  Use OpenRouter backend
   -a, --anthropic   Use Anthropic backend
   -l, --ollama      Use Ollama backend (local)
-  -m, --model       Show model picker (implies --openrouter)
+  -n, --nim         Use NVIDIA NIM backend
   -h, --help        Show this help
 
 Examples:
   claude-launcher login              # authenticate with OpenRouter
   claude-launcher                    # uses last backend/model
-  claude-launcher -m                 # pick a model
+  claude-launcher -b                 # pick backend and model
   claude-launcher -l                 # use Ollama local backend
+  claude-launcher -n                 # use NVIDIA NIM backend
   claude-launcher -- --resume        # pass args to claude`);
 }
 
@@ -109,12 +116,18 @@ async function main() {
   let selectedModel = config.selectedModel;
 
   // Determine backend
-  if (flags.anthropic) {
+  if (flags.backend) {
+    backend = await pickBackend(config.backend);
+    config.backend = backend;
+    saveConfig(config);
+  } else if (flags.openrouter) {
+    backend = "openrouter";
+  } else if (flags.anthropic) {
     backend = "anthropic";
   } else if (flags.ollama) {
     backend = "ollama";
-  } else if (flags.openrouter || flags.model) {
-    backend = "openrouter";
+  } else if (flags.nim) {
+    backend = "nim";
   } else if (config.backend) {
     backend = config.backend;
   } else {
@@ -164,7 +177,7 @@ async function main() {
     config.lastModelFetch = new Date().toISOString();
 
     // Model selection
-    if (flags.model || !selectedModel) {
+    if (flags.backend || !selectedModel) {
       selectedModel = await pickModel(models, selectedModel);
       config.selectedModel = selectedModel;
 
@@ -232,7 +245,7 @@ async function main() {
 
     // Model selection
     let ollamaModel = config.ollamaModel;
-    if (!ollamaModel || !models.some((m) => m.name === ollamaModel)) {
+    if (flags.backend || !ollamaModel || !models.some((m) => m.name === ollamaModel)) {
       ollamaModel = await pickOllamaModel(models);
       config.ollamaModel = ollamaModel;
       config.backend = "ollama";
@@ -265,6 +278,79 @@ async function main() {
 
     console.log(`\nLaunching claude with ${ollamaModel} (Ollama)...\n`);
     launchClaude(passthrough, env);
+  } else if (backend === "nim") {
+    const NIM_CLOUD_HOST = "https://integrate.api.nvidia.com/v1";
+    const host = config.nimHost || NIM_CLOUD_HOST;
+    const isCloud = host === NIM_CLOUD_HOST;
+
+    let apiKey = config.nimApiKey;
+
+    if (isCloud) {
+      if (!apiKey && process.env.NVIDIA_API_KEY) {
+        const useEnv = await confirm({ message: "Use existing NVIDIA_API_KEY from environment?" });
+        if (useEnv) {
+          apiKey = process.env.NVIDIA_API_KEY;
+          config.nimApiKey = apiKey;
+          saveConfig(config);
+        }
+      }
+
+      if (!apiKey) {
+        apiKey = await input({ message: "Enter NVIDIA API key (nvapi-...):" });
+        config.nimApiKey = apiKey;
+        saveConfig(config);
+      }
+    } else {
+      apiKey = apiKey || process.env.NVIDIA_API_KEY || "not-used";
+    }
+
+    console.log("Fetching NIM models...");
+    const models = await fetchNimModels(host, apiKey !== "not-used" ? apiKey : undefined);
+
+    if (models.length === 0) {
+      console.error("No models found on NIM endpoint.");
+      process.exit(1);
+    }
+
+    let nimModel = config.nimModel;
+    if (flags.backend || !nimModel || !models.some((m) => m.id === nimModel)) {
+      nimModel = await pickNimModel(models);
+      config.nimModel = nimModel;
+      config.backend = "nim";
+
+      const configureRoles = await confirm({
+        message: "Configure role models?",
+        default: false,
+      });
+
+      if (configureRoles) {
+        config.nimSonnetModel = await pickNimModel(models, "Sonnet (lighter tasks)");
+        config.nimOpusModel = await pickNimModel(models, "Opus (complex tasks)");
+        config.nimHaikuModel = await pickNimModel(models, "Haiku (quick/cheap)");
+      }
+
+      saveConfig(config);
+    }
+
+    console.log("Starting proxy...");
+    const proxy = await startProxy(host, apiKey!);
+
+    const env = {
+      ...process.env,
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxy.port}`,
+      ANTHROPIC_API_KEY: apiKey,
+      ANTHROPIC_MODEL: nimModel,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: config.nimSonnetModel || nimModel,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: config.nimOpusModel || nimModel,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: config.nimHaikuModel || nimModel,
+    };
+
+    console.log(`\nLaunching claude with ${nimModel} (NIM via proxy :${proxy.port})...\n`);
+    const child = spawn("claude", passthrough, { env, stdio: "inherit" });
+    child.on("exit", (code) => {
+      proxy.close();
+      process.exit(code || 0);
+    });
   } else {
     // Anthropic - just launch claude
     console.log("Launching claude...\n");

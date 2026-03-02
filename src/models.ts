@@ -66,6 +66,24 @@ export async function filterToolCapableOllamaModels(
   return results.filter((r) => r.hasTools).map((r) => r.model);
 }
 
+export interface NimModel {
+  id: string;
+  object: string;
+}
+
+interface NimModelsResponse {
+  data: NimModel[];
+}
+
+export async function fetchNimModels(host: string, apiKey?: string): Promise<NimModel[]> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+  const res = await fetch(`${host}/models`, { headers });
+  if (!res.ok) throw new Error(`Failed to fetch NIM models: ${res.status}`);
+  const data = (await res.json()) as NimModelsResponse;
+  return data.data || [];
+}
+
 export async function fetchModels(): Promise<OpenRouterModel[]> {
   const res = await fetch("https://openrouter.ai/api/v1/models");
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
