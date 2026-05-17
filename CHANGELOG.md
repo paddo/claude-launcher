@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-18
+
+### Added
+- LM Studio backend support (`-s, --lmstudio`) via the translation proxy
+
 ## [0.4.0] - 2026-03-02
 
 ### Added
@@ -56,7 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Model picker with search
 - Config persistence
 
-[Unreleased]: https://github.com/paddo/claude-launcher/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/paddo/claude-launcher/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/paddo/claude-launcher/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/paddo/claude-launcher/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/paddo/claude-launcher/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/paddo/claude-launcher/compare/v0.1.1...v0.2.0

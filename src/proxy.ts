@@ -407,7 +407,7 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString();
 }
 
-export async function startProxy(nimHost: string, apiKey: string): Promise<{ port: number; close: () => void }> {
+export async function startProxy(host: string, apiKey?: string): Promise<{ port: number; close: () => void }> {
   return new Promise((resolve) => {
     const server = createServer(async (req, res) => {
       // Only handle POST /v1/messages
@@ -427,7 +427,7 @@ export async function startProxy(nimHost: string, apiKey: string): Promise<{ por
         };
         if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
-        const upstream = await fetch(`${nimHost}/chat/completions`, {
+        const upstream = await fetch(`${host}/chat/completions`, {
           method: "POST",
           headers,
           body: JSON.stringify(openaiReq),

@@ -1,5 +1,5 @@
 import { search, select } from "@inquirer/prompts";
-import type { OpenRouterModel, OllamaModel, NimModel } from "./models";
+import type { OpenRouterModel, OllamaModel, OpenAIModel } from "./models";
 import { formatContext, formatPrice, formatOllamaSize } from "./models";
 import type { Backend } from "./config";
 
@@ -12,6 +12,7 @@ export async function pickBackend(defaultValue?: Backend): Promise<Backend> {
       { name: "OpenRouter (multiple models)", value: "openrouter" as Backend },
       { name: "Ollama (local)", value: "ollama" as Backend },
       { name: "NIM (NVIDIA)", value: "nim" as Backend },
+      { name: "LM Studio (local)", value: "lmstudio" as Backend },
     ],
   });
 }
@@ -41,14 +42,14 @@ export async function pickModel(
   });
 }
 
-export async function pickNimModel(models: NimModel[], label?: string): Promise<string> {
+export async function pickOpenAIModel(models: OpenAIModel[], label?: string): Promise<string> {
   const choices = models.map((m) => ({
     name: m.id,
     value: m.id,
   }));
 
   return select({
-    message: label ? `${label}:` : "Select NIM model:",
+    message: label ? `${label}:` : "Select model:",
     choices,
   });
 }
