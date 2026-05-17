@@ -2,8 +2,8 @@
 import { spawn } from "child_process";
 import { confirm, input } from "@inquirer/prompts";
 import { getConfig, saveConfig, type Backend } from "./config";
-import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchNimModels } from "./models";
-import { pickBackend, pickModel, pickOllamaModel, pickNimModel } from "./picker";
+import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels } from "./models";
+import { pickBackend, pickModel, pickOllamaModel, pickOpenAIModel } from "./picker";
 import { login } from "./auth";
 import { startProxy } from "./proxy";
 
@@ -15,6 +15,7 @@ function parseArgs() {
     anthropic: false,
     ollama: false,
     nim: false,
+    lmstudio: false,
     backend: false,
     help: false,
     login: false,
@@ -36,6 +37,8 @@ function parseArgs() {
       flags.ollama = true;
     } else if (arg === "--nim" || arg === "-n") {
       flags.nim = true;
+    } else if (arg === "--lmstudio" || arg === "-s") {
+      flags.lmstudio = true;
     } else if (arg === "--backend" || arg === "-b" || arg === "--model" || arg === "-m") {
       flags.backend = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -52,9 +55,12 @@ function parseArgs() {
   return { flags, passthrough };
 }
 
-function launchClaude(passthrough: string[], env?: NodeJS.ProcessEnv) {
+function launchClaude(passthrough: string[], env?: NodeJS.ProcessEnv, onExit?: () => void) {
   const child = spawn("claude", passthrough, { env, stdio: "inherit" });
-  child.on("exit", (code) => process.exit(code || 0));
+  child.on("exit", (code) => {
+    onExit?.();
+    process.exit(code || 0);
+  });
 }
 
 function showHelp() {
@@ -73,6 +79,7 @@ Options:
   -a, --anthropic   Use Anthropic backend
   -l, --ollama      Use Ollama backend (local)
   -n, --nim         Use NVIDIA NIM backend
+  -s, --lmstudio    Use LM Studio backend (local)
   -h, --help        Show this help
 
 Examples:
@@ -81,6 +88,7 @@ Examples:
   claude-launcher -b                 # pick backend and model
   claude-launcher -l                 # use Ollama local backend
   claude-launcher -n                 # use NVIDIA NIM backend
+  claude-launcher -s                 # use LM Studio local backend
   claude-launcher -- --resume        # pass args to claude`);
 }
 
@@ -128,6 +136,8 @@ async function main() {
     backend = "ollama";
   } else if (flags.nim) {
     backend = "nim";
+  } else if (flags.lmstudio) {
+    backend = "lmstudio";
   } else if (config.backend) {
     backend = config.backend;
   } else {
@@ -305,7 +315,7 @@ async function main() {
     }
 
     console.log("Fetching NIM models...");
-    const models = await fetchNimModels(host, apiKey !== "not-used" ? apiKey : undefined);
+    const models = await fetchOpenAIModels(host, apiKey !== "not-used" ? apiKey : undefined);
 
     if (models.length === 0) {
       console.error("No models found on NIM endpoint.");
@@ -314,7 +324,7 @@ async function main() {
 
     let nimModel = config.nimModel;
     if (flags.backend || !nimModel || !models.some((m) => m.id === nimModel)) {
-      nimModel = await pickNimModel(models);
+      nimModel = await pickOpenAIModel(models);
       config.nimModel = nimModel;
       config.backend = "nim";
 
@@ -324,9 +334,9 @@ async function main() {
       });
 
       if (configureRoles) {
-        config.nimSonnetModel = await pickNimModel(models, "Sonnet (lighter tasks)");
-        config.nimOpusModel = await pickNimModel(models, "Opus (complex tasks)");
-        config.nimHaikuModel = await pickNimModel(models, "Haiku (quick/cheap)");
+        config.nimSonnetModel = await pickOpenAIModel(models, "Sonnet (lighter tasks)");
+        config.nimOpusModel = await pickOpenAIModel(models, "Opus (complex tasks)");
+        config.nimHaikuModel = await pickOpenAIModel(models, "Haiku (quick/cheap)");
       }
 
       saveConfig(config);
@@ -346,11 +356,61 @@ async function main() {
     };
 
     console.log(`\nLaunching claude with ${nimModel} (NIM via proxy :${proxy.port})...\n`);
-    const child = spawn("claude", passthrough, { env, stdio: "inherit" });
-    child.on("exit", (code) => {
-      proxy.close();
-      process.exit(code || 0);
-    });
+    launchClaude(passthrough, env, () => proxy.close());
+  } else if (backend === "lmstudio") {
+    const host = config.lmstudioHost || "http://localhost:1234/v1";
+
+    console.log("Fetching LM Studio models...");
+    let models;
+    try {
+      models = await fetchOpenAIModels(host);
+    } catch {
+      console.error(`Failed to connect to LM Studio at ${host}`);
+      console.error("Make sure the LM Studio server is running.");
+      process.exit(1);
+    }
+
+    if (models.length === 0) {
+      console.error("No models found. Load a model in LM Studio first.");
+      process.exit(1);
+    }
+
+    let lmstudioModel = config.lmstudioModel;
+    if (flags.backend || !lmstudioModel || !models.some((m) => m.id === lmstudioModel)) {
+      lmstudioModel = await pickOpenAIModel(models);
+      config.lmstudioModel = lmstudioModel;
+      config.backend = "lmstudio";
+
+      const configureRoles = await confirm({
+        message: "Configure role models? (ensures all requests stay local)",
+        default: true,
+      });
+
+      if (configureRoles) {
+        config.lmstudioSonnetModel = await pickOpenAIModel(models, "Sonnet (lighter tasks)");
+        config.lmstudioOpusModel = await pickOpenAIModel(models, "Opus (complex tasks)");
+        config.lmstudioHaikuModel = await pickOpenAIModel(models, "Haiku (quick/cheap)");
+      }
+
+      saveConfig(config);
+    }
+
+    console.log("Starting proxy...");
+    const proxy = await startProxy(host);
+
+    const env = {
+      ...process.env,
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxy.port}`,
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "lmstudio",
+      ANTHROPIC_MODEL: lmstudioModel,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: config.lmstudioSonnetModel || lmstudioModel,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: config.lmstudioOpusModel || lmstudioModel,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: config.lmstudioHaikuModel || lmstudioModel,
+    };
+
+    console.log(`\nLaunching claude with ${lmstudioModel} (LM Studio via proxy :${proxy.port})...\n`);
+    launchClaude(passthrough, env, () => proxy.close());
   } else {
     // Anthropic - just launch claude
     console.log("Launching claude...\n");

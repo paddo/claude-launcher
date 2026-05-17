@@ -66,21 +66,21 @@ export async function filterToolCapableOllamaModels(
   return results.filter((r) => r.hasTools).map((r) => r.model);
 }
 
-export interface NimModel {
+export interface OpenAIModel {
   id: string;
   object: string;
 }
 
-interface NimModelsResponse {
-  data: NimModel[];
+interface OpenAIModelsResponse {
+  data: OpenAIModel[];
 }
 
-export async function fetchNimModels(host: string, apiKey?: string): Promise<NimModel[]> {
+export async function fetchOpenAIModels(host: string, apiKey?: string): Promise<OpenAIModel[]> {
   const headers: Record<string, string> = {};
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
   const res = await fetch(`${host}/models`, { headers });
-  if (!res.ok) throw new Error(`Failed to fetch NIM models: ${res.status}`);
-  const data = (await res.json()) as NimModelsResponse;
+  if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
+  const data = (await res.json()) as OpenAIModelsResponse;
   return data.data || [];
 }
 
