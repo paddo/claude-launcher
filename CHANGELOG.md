@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-19
+
+### Added
+- Auto-enable 1M context (`[1m]` suffix) for OpenRouter models that advertise it
+
 ## [0.5.0] - 2026-05-18
 
 ### Added

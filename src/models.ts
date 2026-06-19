@@ -106,6 +106,18 @@ export function filterAgenticModels(models: OpenRouterModel[]): OpenRouterModel[
     .map((m) => ({ ...m, hasExacto: exactoIds.has(m.id) }));
 }
 
+// [1m] enables 1M-context support in Claude Code for any model that advertises it.
+export function supports1MContext(model: OpenRouterModel): boolean {
+  return model.context_length >= 1_000_000;
+}
+
+// Appends [1m] to the model value (after any :exacto suffix) when supported.
+export function withContextFlag(modelValue: string, models: OpenRouterModel[]): string {
+  const baseId = modelValue.replace(/:exacto$/, "");
+  const model = models.find((m) => m.id === baseId);
+  return model && supports1MContext(model) ? `${modelValue}[1m]` : modelValue;
+}
+
 export function getNewModels(models: OpenRouterModel[], seenIds: string[]): OpenRouterModel[] {
   const seen = new Set(seenIds);
   return models.filter((m) => !seen.has(m.id));

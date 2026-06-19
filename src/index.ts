@@ -2,7 +2,7 @@
 import { spawn } from "child_process";
 import { confirm, input } from "@inquirer/prompts";
 import { getConfig, saveConfig, type Backend } from "./config";
-import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels } from "./models";
+import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels, withContextFlag } from "./models";
 import { pickBackend, pickModel, pickOllamaModel, pickOpenAIModel } from "./picker";
 import { login } from "./auth";
 import { startProxy } from "./proxy";
@@ -205,19 +205,20 @@ async function main() {
 
     saveConfig(config);
 
-    // Launch claude with OpenRouter env
+    // Launch claude with OpenRouter env, enabling 1M context where supported
+    const model = withContextFlag(selectedModel!, models);
     const env = {
       ...process.env,
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
       ANTHROPIC_API_KEY: "",
       ANTHROPIC_AUTH_TOKEN: apiKey,
-      ANTHROPIC_MODEL: selectedModel,
-      ANTHROPIC_DEFAULT_SONNET_MODEL: config.sonnetModel || selectedModel,
-      ANTHROPIC_DEFAULT_OPUS_MODEL: config.opusModel || selectedModel,
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: config.haikuModel || selectedModel,
+      ANTHROPIC_MODEL: model,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: withContextFlag(config.sonnetModel || selectedModel!, models),
+      ANTHROPIC_DEFAULT_OPUS_MODEL: withContextFlag(config.opusModel || selectedModel!, models),
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: withContextFlag(config.haikuModel || selectedModel!, models),
     };
 
-    console.log(`\nLaunching claude with ${selectedModel}...\n`);
+    console.log(`\nLaunching claude with ${model}...\n`);
     launchClaude(passthrough, env);
   } else if (backend === "ollama") {
     const host = config.ollamaHost || "http://localhost:11434";
