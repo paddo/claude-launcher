@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-06-20
+
+### Removed
+- Revert the `CLAUDE_CODE_CONTEXT_1M` env var. Verified (multi-source research,
+  Claude Code v2.1.x) that Claude Code caps non-first-party models at 200K via
+  an internal `api.anthropic.com`-only context-detection gate; no shipped env
+  var or setting lifts it for OpenRouter models, and `CLAUDE_CODE_CONTEXT_1M`
+  is a no-op. See anthropics/claude-code#46416 (closed "not planned").
+
 ## [0.6.2] - 2026-06-20
 
 ### Added

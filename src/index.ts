@@ -2,7 +2,7 @@
 import { spawn } from "child_process";
 import { confirm, input } from "@inquirer/prompts";
 import { getConfig, saveConfig, type Backend } from "./config";
-import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels, supports1MContext } from "./models";
+import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels } from "./models";
 import { pickBackend, pickModel, pickOllamaModel, pickOpenAIModel } from "./picker";
 import { login } from "./auth";
 import { startProxy } from "./proxy";
@@ -205,10 +205,10 @@ async function main() {
 
     saveConfig(config);
 
-    // Claude Code caps unknown models at 200k; lift it for 1M-capable models.
-    const enable1M = supports1MContext(selectedModel!, models);
-
-    // Launch claude with OpenRouter env
+    // Note: Claude Code caps non-first-party models at 200k regardless of the
+    // model's real context window — context detection is skipped for any base
+    // URL that isn't api.anthropic.com (claude-code#46416). There is no shipped
+    // env var or setting to lift it for OpenRouter models, so we don't try.
     const env = {
       ...process.env,
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
@@ -218,10 +218,9 @@ async function main() {
       ANTHROPIC_DEFAULT_SONNET_MODEL: config.sonnetModel || selectedModel,
       ANTHROPIC_DEFAULT_OPUS_MODEL: config.opusModel || selectedModel,
       ANTHROPIC_DEFAULT_HAIKU_MODEL: config.haikuModel || selectedModel,
-      ...(enable1M ? { CLAUDE_CODE_CONTEXT_1M: "true" } : {}),
     };
 
-    console.log(`\nLaunching claude with ${selectedModel}${enable1M ? " (1M context)" : ""}...\n`);
+    console.log(`\nLaunching claude with ${selectedModel}...\n`);
     launchClaude(passthrough, env);
   } else if (backend === "ollama") {
     const host = config.ollamaHost || "http://localhost:11434";
