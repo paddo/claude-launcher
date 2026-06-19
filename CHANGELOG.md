@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-06-19
+
+### Removed
+- Revert 1M context `[1m]` suffix. The suffix is an Anthropic-first-party Claude
+  Code convention; appended to an OpenRouter model ID it is passed through
+  literally and rejected ("model may not exist"). Claude Code provides no
+  supported way to lift its 200K context cap for non-Anthropic models.
+
 ## [0.6.0] - 2026-06-19
 
 ### Added
