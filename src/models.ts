@@ -106,6 +106,14 @@ export function filterAgenticModels(models: OpenRouterModel[]): OpenRouterModel[
     .map((m) => ({ ...m, hasExacto: exactoIds.has(m.id) }));
 }
 
+// Claude Code caps unknown models at 200k; CLAUDE_CODE_CONTEXT_1M=true lifts it
+// to the model's full window when the model advertises >=1M context.
+export function supports1MContext(modelValue: string, models: OpenRouterModel[]): boolean {
+  const baseId = modelValue.replace(/:exacto$/, "");
+  const model = models.find((m) => m.id === baseId);
+  return model ? model.context_length >= 1_000_000 : false;
+}
+
 export function getNewModels(models: OpenRouterModel[], seenIds: string[]): OpenRouterModel[] {
   const seen = new Set(seenIds);
   return models.filter((m) => !seen.has(m.id));

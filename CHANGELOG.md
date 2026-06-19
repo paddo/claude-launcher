@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-06-20
+
+### Added
+- Enable 1M context for capable OpenRouter models via `CLAUDE_CODE_CONTEXT_1M=true`.
+  Claude Code caps unrecognized models at 200K; this env var lifts it to the
+  model's full window. Replaces the reverted `[1m]` suffix approach, which broke
+  model resolution (the suffix is Anthropic-first-party only).
+
 ## [0.6.1] - 2026-06-19
 
 ### Removed
