@@ -1,5 +1,5 @@
 import { search, select } from "@inquirer/prompts";
-import type { OpenRouterModel, OllamaModel, OpenAIModel } from "./models";
+import type { OpenRouterModel, OllamaModel, OpenAIModel, CodexModel } from "./models";
 import { formatContext, formatPrice, formatOllamaSize } from "./models";
 import type { Backend } from "./config";
 
@@ -10,10 +10,31 @@ export async function pickBackend(defaultValue?: Backend): Promise<Backend> {
     choices: [
       { name: "Anthropic (standard)", value: "anthropic" as Backend },
       { name: "OpenRouter (multiple models)", value: "openrouter" as Backend },
+      { name: "Codex (ChatGPT subscription)", value: "codex" as Backend },
       { name: "Ollama (local)", value: "ollama" as Backend },
       { name: "NIM (NVIDIA)", value: "nim" as Backend },
       { name: "LM Studio (local)", value: "lmstudio" as Backend },
     ],
+  });
+}
+
+export async function pickCodexModel(models: CodexModel[], currentModel?: string, label?: string): Promise<string> {
+  return select({
+    message: label ? `${label}:` : "Select model:",
+    default: currentModel,
+    choices: models.map((m) => ({
+      name: `${m.displayName} [${formatContext(m.contextWindow)}]`,
+      value: m.slug,
+      description: m.slug,
+    })),
+  });
+}
+
+export async function pickCodexEffort(efforts: string[], currentEffort?: string): Promise<string> {
+  return select({
+    message: "Reasoning effort:",
+    default: currentEffort,
+    choices: efforts.map((e) => ({ name: e, value: e })),
   });
 }
 
@@ -56,7 +77,9 @@ export async function pickOpenAIModel(models: OpenAIModel[], label?: string): Pr
 
 export async function pickOllamaModel(models: OllamaModel[], label?: string): Promise<string> {
   const choices = models.map((m) => ({
-    name: `${m.name} [${formatOllamaSize(m.size)}]`,
+    // Cloud models (`:cloud` suffix) run on Ollama's infra and have no local
+    // size, so tag them instead of showing a meaningless byte count.
+    name: `${m.name} ${m.name.endsWith(":cloud") ? "[cloud]" : `[${formatOllamaSize(m.size)}]`}`,
     value: m.name,
   }));
 

@@ -2,10 +2,11 @@
 import { spawn } from "child_process";
 import { confirm, input } from "@inquirer/prompts";
 import { getConfig, saveConfig, type Backend } from "./config";
-import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels } from "./models";
-import { pickBackend, pickModel, pickOllamaModel, pickOpenAIModel } from "./picker";
+import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels, fetchCodexModels, formatContext, getOllamaContext, openAIModelContext, getLmStudioContext } from "./models";
+import { pickBackend, pickModel, pickOllamaModel, pickOpenAIModel, pickCodexModel, pickCodexEffort } from "./picker";
 import { login } from "./auth";
 import { startProxy } from "./proxy";
+import { startCodexProxy } from "./codex-proxy";
 
 const args = process.argv.slice(2);
 
@@ -16,6 +17,7 @@ function parseArgs() {
     ollama: false,
     nim: false,
     lmstudio: false,
+    codex: false,
     backend: false,
     help: false,
     login: false,
@@ -39,6 +41,8 @@ function parseArgs() {
       flags.nim = true;
     } else if (arg === "--lmstudio" || arg === "-s") {
       flags.lmstudio = true;
+    } else if (arg === "--codex" || arg === "-c") {
+      flags.codex = true;
     } else if (arg === "--backend" || arg === "-b" || arg === "--model" || arg === "-m") {
       flags.backend = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -63,6 +67,14 @@ function launchClaude(passthrough: string[], env?: NodeJS.ProcessEnv, onExit?: (
   });
 }
 
+// Claude Code caps non-first-party base URLs at 200k (claude-code#46416). The
+// MAX_CONTEXT_TOKENS override is only honored when auto-compaction is disabled,
+// so both are set together to reach a model's real window when it exceeds 200k.
+function contextOverrideEnv(contextWindow: number): Record<string, string> {
+  if (!contextWindow || contextWindow <= 200000) return {};
+  return { DISABLE_COMPACT: "1", CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(contextWindow) };
+}
+
 function showHelp() {
   console.log(`claude-launcher - Launch Claude Code with multiple backends
 
@@ -77,6 +89,7 @@ Options:
   -m, --model       Alias for -b
   -o, --openrouter  Use OpenRouter backend
   -a, --anthropic   Use Anthropic backend
+  -c, --codex       Use Codex backend (ChatGPT subscription)
   -l, --ollama      Use Ollama backend (local)
   -n, --nim         Use NVIDIA NIM backend
   -s, --lmstudio    Use LM Studio backend (local)
@@ -138,6 +151,8 @@ async function main() {
     backend = "nim";
   } else if (flags.lmstudio) {
     backend = "lmstudio";
+  } else if (flags.codex) {
+    backend = "codex";
   } else if (config.backend) {
     backend = config.backend;
   } else {
@@ -205,10 +220,8 @@ async function main() {
 
     saveConfig(config);
 
-    // Note: Claude Code caps non-first-party models at 200k regardless of the
-    // model's real context window — context detection is skipped for any base
-    // URL that isn't api.anthropic.com (claude-code#46416). There is no shipped
-    // env var or setting to lift it for OpenRouter models, so we don't try.
+    const baseId = selectedModel?.replace(/:exacto$/, "");
+    const orContext = models.find((m) => m.id === baseId)?.context_length ?? 0;
     const env = {
       ...process.env,
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
@@ -218,6 +231,7 @@ async function main() {
       ANTHROPIC_DEFAULT_SONNET_MODEL: config.sonnetModel || selectedModel,
       ANTHROPIC_DEFAULT_OPUS_MODEL: config.opusModel || selectedModel,
       ANTHROPIC_DEFAULT_HAIKU_MODEL: config.haikuModel || selectedModel,
+      ...contextOverrideEnv(orContext),
     };
 
     console.log(`\nLaunching claude with ${selectedModel}...\n`);
@@ -277,6 +291,7 @@ async function main() {
       saveConfig(config);
     }
 
+    const ollamaContext = await getOllamaContext(host, ollamaModel);
     // Launch with Ollama env vars - set all role models to stay fully local
     const env = {
       ...process.env,
@@ -287,6 +302,7 @@ async function main() {
       ANTHROPIC_DEFAULT_SONNET_MODEL: config.ollamaSonnetModel || ollamaModel,
       ANTHROPIC_DEFAULT_OPUS_MODEL: config.ollamaOpusModel || ollamaModel,
       ANTHROPIC_DEFAULT_HAIKU_MODEL: config.ollamaHaikuModel || ollamaModel,
+      ...contextOverrideEnv(ollamaContext),
     };
 
     console.log(`\nLaunching claude with ${ollamaModel} (Ollama)...\n`);
@@ -356,6 +372,7 @@ async function main() {
       ANTHROPIC_DEFAULT_SONNET_MODEL: config.nimSonnetModel || nimModel,
       ANTHROPIC_DEFAULT_OPUS_MODEL: config.nimOpusModel || nimModel,
       ANTHROPIC_DEFAULT_HAIKU_MODEL: config.nimHaikuModel || nimModel,
+      ...contextOverrideEnv(openAIModelContext(models.find((m) => m.id === nimModel))),
     };
 
     console.log(`\nLaunching claude with ${nimModel} (NIM via proxy :${proxy.port})...\n`);
@@ -410,9 +427,72 @@ async function main() {
       ANTHROPIC_DEFAULT_SONNET_MODEL: config.lmstudioSonnetModel || lmstudioModel,
       ANTHROPIC_DEFAULT_OPUS_MODEL: config.lmstudioOpusModel || lmstudioModel,
       ANTHROPIC_DEFAULT_HAIKU_MODEL: config.lmstudioHaikuModel || lmstudioModel,
+      ...contextOverrideEnv(await getLmStudioContext(host, lmstudioModel)),
     };
 
     console.log(`\nLaunching claude with ${lmstudioModel} (LM Studio via proxy :${proxy.port})...\n`);
+    launchClaude(passthrough, env, () => proxy.close());
+  } else if (backend === "codex") {
+    let models;
+    try {
+      models = fetchCodexModels();
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+    if (models.length === 0) {
+      console.error("No Codex models available. Run `codex` once while signed in with ChatGPT.");
+      process.exit(1);
+    }
+
+    let codexModel = config.codexModel;
+    if (flags.backend || !codexModel || !models.some((m) => m.slug === codexModel)) {
+      codexModel = await pickCodexModel(models, codexModel);
+      config.codexModel = codexModel;
+      config.backend = "codex";
+
+      // Map OpenAI's flagship/mid/cheap tiers onto Claude Code's task roles so
+      // its router sends hard work to Sol, lighter work to Terra, quick to Luna.
+      const slugs = new Set(models.map((m) => m.slug));
+      if (slugs.has("gpt-5.6-sol") && slugs.has("gpt-5.6-terra") && slugs.has("gpt-5.6-luna")) {
+        config.codexOpusModel = "gpt-5.6-sol";
+        config.codexSonnetModel = "gpt-5.6-terra";
+        config.codexHaikuModel = "gpt-5.6-luna";
+        console.log("Role mapping: opus -> sol, sonnet -> terra, haiku -> luna");
+      }
+
+      const customize = await confirm({ message: "Customize role models?", default: false });
+      if (customize) {
+        config.codexOpusModel = await pickCodexModel(models, config.codexOpusModel, "Opus (complex tasks)");
+        config.codexSonnetModel = await pickCodexModel(models, config.codexSonnetModel, "Sonnet (lighter tasks)");
+        config.codexHaikuModel = await pickCodexModel(models, config.codexHaikuModel, "Haiku (quick/cheap)");
+      }
+
+      const selected = models.find((m) => m.slug === codexModel)!;
+      config.codexEffort = await pickCodexEffort(selected.efforts, config.codexEffort ?? selected.defaultEffort);
+
+      saveConfig(config);
+    }
+
+    const effort = config.codexEffort ?? "medium";
+    const contextWindow = models.find((m) => m.slug === codexModel)?.contextWindow || 200000;
+
+    console.log("Starting Codex proxy...");
+    const proxy = await startCodexProxy(effort);
+
+    const env = {
+      ...process.env,
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxy.port}`,
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "codex",
+      ANTHROPIC_MODEL: codexModel,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: config.codexOpusModel || codexModel,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: config.codexSonnetModel || codexModel,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: config.codexHaikuModel || codexModel,
+      ...contextOverrideEnv(contextWindow),
+    };
+
+    console.log(`\nLaunching claude with ${codexModel} @ ${effort} effort, ${formatContext(contextWindow)} context (Codex sub via proxy :${proxy.port})...\n`);
     launchClaude(passthrough, env, () => proxy.close());
   } else {
     // Anthropic - just launch claude

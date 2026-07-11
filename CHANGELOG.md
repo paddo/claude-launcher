@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-12
+
+### Added
+- Codex backend (`-c` / `--codex`): run Claude Code on a ChatGPT subscription.
+  Reuses the existing `~/.codex` login (OAuth token, auto-refreshed), discovers
+  available models from Codex's own cache, maps the flagship/mid/cheap tiers
+  onto Claude Code's opus/sonnet/haiku task roles, and lets you pick a reasoning
+  effort. Translates Claude Code's requests to the Codex Responses API.
+- Context-window override for non-Anthropic backends. Sets
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS` together with `DISABLE_COMPACT` (the override
+  is only honored when auto-compaction is off) to reach a model's real window
+  past Claude Code's 200K cap. This is the approach that actually works for
+  third-party models, where the reverted `CLAUDE_CODE_CONTEXT_1M` did not.
+  Applied only when the served window exceeds 200K, using each backend's own
+  context source: OpenRouter `context_length`, LM Studio `loaded_context_length`
+  (via the native `/api/v0/models`, since `/v1/models` omits it), Codex model
+  cache, NIM `max_model_len`, and Ollama `/api/show`.
+- `[cloud]` tag for Ollama cloud models (`:cloud`) in the picker.
+
 ## [0.6.3] - 2026-06-20
 
 ### Removed

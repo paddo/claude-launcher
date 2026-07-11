@@ -1,3 +1,7 @@
+import { homedir } from "os";
+import { join } from "path";
+import { existsSync, readFileSync } from "fs";
+
 export interface OpenRouterModel {
   id: string;
   name: string;
@@ -39,6 +43,27 @@ export function formatOllamaSize(size: number): string {
 
 interface OllamaShowResponse {
   capabilities?: string[];
+  model_info?: Record<string, unknown>;
+}
+
+// Ollama exposes the model's trained context under a per-architecture key
+// (e.g. "qwen2.context_length") in /api/show. Returns 0 if unavailable.
+export async function getOllamaContext(host: string, name: string): Promise<number> {
+  try {
+    const res = await fetch(`${host}/api/show`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) return 0;
+    const data = (await res.json()) as OllamaShowResponse;
+    const info = data.model_info ?? {};
+    const key = Object.keys(info).find((k) => k.endsWith(".context_length"));
+    const val = key ? info[key] : undefined;
+    return typeof val === "number" ? val : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function hasToolCapability(host: string, modelName: string): Promise<boolean> {
@@ -69,6 +94,36 @@ export async function filterToolCapableOllamaModels(
 export interface OpenAIModel {
   id: string;
   object: string;
+  max_model_len?: number;
+  context_length?: number;
+  max_context_length?: number;
+}
+
+// OpenAI-compatible /models responses don't standardize a context field; read
+// whichever the endpoint happens to expose (vLLM/NIM use max_model_len, LM
+// Studio sometimes context_length). Returns 0 when none is present.
+export function openAIModelContext(model?: OpenAIModel): number {
+  const value = model?.max_model_len ?? model?.context_length ?? model?.max_context_length;
+  return typeof value === "number" ? value : 0;
+}
+
+// LM Studio's OpenAI-compat /v1/models omits context entirely; its native
+// /api/v0/models exposes loaded_context_length (the window actually being
+// served). Returning that avoids over-promising a window LM Studio isn't
+// serving. Returns 0 when the model isn't loaded, so no override is applied.
+export async function getLmStudioContext(host: string, modelId: string): Promise<number> {
+  try {
+    const base = host.replace(/\/v1\/?$/, "");
+    const res = await fetch(`${base}/api/v0/models`);
+    if (!res.ok) return 0;
+    const data = (await res.json()) as {
+      data?: { id: string; loaded_context_length?: number | null }[];
+    };
+    const model = data.data?.find((m) => m.id === modelId);
+    return typeof model?.loaded_context_length === "number" ? model.loaded_context_length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 interface OpenAIModelsResponse {
@@ -82,6 +137,43 @@ export async function fetchOpenAIModels(host: string, apiKey?: string): Promise<
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
   const data = (await res.json()) as OpenAIModelsResponse;
   return data.data || [];
+}
+
+export interface CodexModel {
+  slug: string;
+  displayName: string;
+  contextWindow: number;
+  efforts: string[];
+  defaultEffort: string;
+}
+
+interface RawCodexModel {
+  slug: string;
+  display_name?: string;
+  context_window?: number;
+  visibility?: string;
+  supported_reasoning_levels?: (string | { effort: string })[];
+  default_reasoning_level?: string;
+}
+
+// Codex caches the model catalog the backend returned for the signed-in
+// ChatGPT plan here; reading it means the picker reflects real plan access
+// and updates whenever Codex refreshes, with no hardcoded list to rot.
+export function fetchCodexModels(): CodexModel[] {
+  const path = join(homedir(), ".codex", "models_cache.json");
+  if (!existsSync(path)) {
+    throw new Error("No Codex model cache. Run `codex` once while signed in with ChatGPT.");
+  }
+  const data = JSON.parse(readFileSync(path, "utf-8")) as { models?: RawCodexModel[] };
+  return (data.models ?? [])
+    .filter((m) => m.visibility === "list")
+    .map((m) => ({
+      slug: m.slug,
+      displayName: m.display_name ?? m.slug,
+      contextWindow: m.context_window ?? 0,
+      efforts: (m.supported_reasoning_levels ?? []).map((l) => (typeof l === "string" ? l : l.effort)),
+      defaultEffort: m.default_reasoning_level ?? "medium",
+    }));
 }
 
 export async function fetchModels(): Promise<OpenRouterModel[]> {

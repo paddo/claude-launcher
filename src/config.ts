@@ -2,7 +2,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 
-export type Backend = "anthropic" | "openrouter" | "ollama" | "nim" | "lmstudio";
+export type Backend = "anthropic" | "openrouter" | "ollama" | "nim" | "lmstudio" | "codex";
 
 export interface Config {
   backend?: Backend;
@@ -29,6 +29,11 @@ export interface Config {
   lmstudioSonnetModel?: string;
   lmstudioOpusModel?: string;
   lmstudioHaikuModel?: string;
+  codexModel?: string;
+  codexSonnetModel?: string;
+  codexOpusModel?: string;
+  codexHaikuModel?: string;
+  codexEffort?: string;
 }
 
 const CONFIG_DIR = join(homedir(), ".config", "claude-launcher");
