@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { randomUUID } from "crypto";
 import { getCodexTokens, getCodexVersion, type CodexTokens } from "./codex-auth";
+import { normalizeAnthropicContent } from "./anthropic-adapter";
 
 const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -292,6 +293,7 @@ export async function startCodexProxy(effort: string): Promise<{ port: number; c
         const chunks: Buffer[] = [];
         for await (const chunk of req) chunks.push(chunk as Buffer);
         const anthropicReq = JSON.parse(Buffer.concat(chunks).toString()) as AnthropicRequest;
+        normalizeAnthropicContent(anthropicReq);
         const body = buildResponsesBody(anthropicReq, effort);
 
         let tokens = await getCodexTokens();

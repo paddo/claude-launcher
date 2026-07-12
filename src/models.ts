@@ -176,6 +176,46 @@ export function fetchCodexModels(): CodexModel[] {
     }));
 }
 
+export interface GrokModel {
+  id: string;
+  contextWindow: number;
+  efforts: string[];
+  defaultEffort: string;
+}
+
+interface RawGrokEffort {
+  id?: string;
+  value?: string;
+  default?: boolean;
+}
+
+interface RawGrokModel {
+  id: string;
+  context_window?: number;
+  reasoning_efforts?: RawGrokEffort[] | null;
+  reasoning_effort?: string | null;
+}
+
+// Grok Build's backend lists the models the signed-in plan can use. Discovering
+// them live keeps the picker honest and picks up new models without a release.
+export async function fetchGrokModels(token: string): Promise<GrokModel[]> {
+  const res = await fetch("https://cli-chat-proxy.grok.com/v1/models", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch Grok models: ${res.status}`);
+  const data = (await res.json()) as { data?: RawGrokModel[]; models?: RawGrokModel[] };
+  return (data.data ?? data.models ?? []).map((m) => {
+    const levels = m.reasoning_efforts ?? [];
+    const def = levels.find((e) => e.default);
+    return {
+      id: m.id,
+      contextWindow: m.context_window ?? 0,
+      efforts: levels.map((e) => e.value ?? e.id ?? "").filter(Boolean),
+      defaultEffort: m.reasoning_effort ?? def?.value ?? def?.id ?? "high",
+    };
+  });
+}
+
 export async function fetchModels(): Promise<OpenRouterModel[]> {
   const res = await fetch("https://openrouter.ai/api/v1/models");
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);

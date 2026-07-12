@@ -2,7 +2,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 
-export type Backend = "anthropic" | "openrouter" | "ollama" | "nim" | "lmstudio" | "codex";
+export type Backend = "anthropic" | "openrouter" | "ollama" | "nim" | "lmstudio" | "codex" | "grok";
 
 export interface Config {
   backend?: Backend;
@@ -34,6 +34,11 @@ export interface Config {
   codexOpusModel?: string;
   codexHaikuModel?: string;
   codexEffort?: string;
+  grokModel?: string;
+  grokSonnetModel?: string;
+  grokOpusModel?: string;
+  grokHaikuModel?: string;
+  grokEffort?: string;
 }
 
 const CONFIG_DIR = join(homedir(), ".config", "claude-launcher");

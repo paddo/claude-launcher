@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
+import { normalizeAnthropicContent } from "./anthropic-adapter";
 
 interface AnthropicMessage {
   role: string;
@@ -420,6 +421,7 @@ export async function startProxy(host: string, apiKey?: string): Promise<{ port:
       try {
         const body = JSON.parse(await readBody(req));
         const anthropicReq = body as AnthropicRequest;
+        normalizeAnthropicContent(anthropicReq);
         const openaiReq = buildOpenAIRequest(anthropicReq);
 
         const headers: Record<string, string> = {

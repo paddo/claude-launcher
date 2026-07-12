@@ -2,11 +2,13 @@
 import { spawn } from "child_process";
 import { confirm, input } from "@inquirer/prompts";
 import { getConfig, saveConfig, type Backend } from "./config";
-import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels, fetchCodexModels, formatContext, getOllamaContext, openAIModelContext, getLmStudioContext } from "./models";
-import { pickBackend, pickModel, pickOllamaModel, pickOpenAIModel, pickCodexModel, pickCodexEffort } from "./picker";
+import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels, fetchCodexModels, fetchGrokModels, formatContext, getOllamaContext, openAIModelContext, getLmStudioContext } from "./models";
+import { pickBackend, pickModel, pickOllamaModel, pickOpenAIModel, pickCodexModel, pickCodexEffort, pickGrokModel } from "./picker";
 import { login } from "./auth";
 import { startProxy } from "./proxy";
 import { startCodexProxy } from "./codex-proxy";
+import { getGrokAuth } from "./grok-auth";
+import { startGrokProxy } from "./grok-proxy";
 
 const args = process.argv.slice(2);
 
@@ -18,6 +20,7 @@ function parseArgs() {
     nim: false,
     lmstudio: false,
     codex: false,
+    grok: false,
     backend: false,
     help: false,
     login: false,
@@ -43,6 +46,8 @@ function parseArgs() {
       flags.lmstudio = true;
     } else if (arg === "--codex" || arg === "-c") {
       flags.codex = true;
+    } else if (arg === "--grok" || arg === "-g") {
+      flags.grok = true;
     } else if (arg === "--backend" || arg === "-b" || arg === "--model" || arg === "-m") {
       flags.backend = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -90,6 +95,7 @@ Options:
   -o, --openrouter  Use OpenRouter backend
   -a, --anthropic   Use Anthropic backend
   -c, --codex       Use Codex backend (ChatGPT subscription)
+  -g, --grok        Use Grok backend (X/SuperGrok subscription)
   -l, --ollama      Use Ollama backend (local)
   -n, --nim         Use NVIDIA NIM backend
   -s, --lmstudio    Use LM Studio backend (local)
@@ -153,6 +159,8 @@ async function main() {
     backend = "lmstudio";
   } else if (flags.codex) {
     backend = "codex";
+  } else if (flags.grok) {
+    backend = "grok";
   } else if (config.backend) {
     backend = config.backend;
   } else {
@@ -493,6 +501,74 @@ async function main() {
     };
 
     console.log(`\nLaunching claude with ${codexModel} @ ${effort} effort, ${formatContext(contextWindow)} context (Codex sub via proxy :${proxy.port})...\n`);
+    launchClaude(passthrough, env, () => proxy.close());
+  } else if (backend === "grok") {
+    let auth;
+    try {
+      auth = await getGrokAuth();
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+    let models;
+    try {
+      models = await fetchGrokModels(auth.token);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+    if (models.length === 0) {
+      console.error("No Grok models available. Run `grok` once while signed in.");
+      process.exit(1);
+    }
+
+    let grokModel = config.grokModel;
+    if (flags.backend || !grokModel || !models.some((m) => m.id === grokModel)) {
+      grokModel = await pickGrokModel(models, grokModel);
+      config.grokModel = grokModel;
+      config.backend = "grok";
+
+      // On a flat subscription there's no per-token saving from a cheaper
+      // model, so every role defaults to the picked model for consistent
+      // quality (and one context window). Opt into a faster model per role below.
+      config.grokOpusModel = grokModel;
+      config.grokSonnetModel = grokModel;
+      config.grokHaikuModel = grokModel;
+
+      const customize = await confirm({ message: "Use a faster model for lighter roles?", default: false });
+      if (customize) {
+        config.grokOpusModel = await pickGrokModel(models, config.grokOpusModel, "Opus (complex tasks)");
+        config.grokSonnetModel = await pickGrokModel(models, config.grokSonnetModel, "Sonnet (lighter tasks)");
+        config.grokHaikuModel = await pickGrokModel(models, config.grokHaikuModel, "Haiku (quick/cheap)");
+      }
+
+      const selected = models.find((m) => m.id === grokModel)!;
+      if (selected.efforts.length) {
+        config.grokEffort = await pickCodexEffort(selected.efforts, config.grokEffort ?? selected.defaultEffort);
+      }
+
+      saveConfig(config);
+    }
+
+    const effort = config.grokEffort;
+    const contextWindow = models.find((m) => m.id === grokModel)?.contextWindow || 200000;
+
+    console.log("Starting Grok proxy...");
+    const proxy = await startGrokProxy(effort);
+
+    const env = {
+      ...process.env,
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxy.port}`,
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "grok",
+      ANTHROPIC_MODEL: grokModel,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: config.grokOpusModel || grokModel,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: config.grokSonnetModel || grokModel,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: config.grokHaikuModel || grokModel,
+      ...contextOverrideEnv(contextWindow),
+    };
+
+    console.log(`\nLaunching claude with ${grokModel}${effort ? ` @ ${effort} effort` : ""}, ${formatContext(contextWindow)} context (Grok sub via proxy :${proxy.port})...\n`);
     launchClaude(passthrough, env, () => proxy.close());
   } else {
     // Anthropic - just launch claude

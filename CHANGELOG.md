@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-12
+
+### Added
+- Grok backend (`-g` / `--grok`): run Claude Code on an X / SuperGrok
+  subscription. Reuses the existing `~/.grok` (Grok Build) login with OIDC
+  token refresh, discovers models live, and defaults every role to the picked
+  model since a flat subscription has no per-token saving from a cheaper tier
+  (opt into a faster model for lighter roles). Grok's backend speaks the
+  Anthropic API natively, so the proxy is a pass-through that injects the
+  session token and the required client-version header.
+- Shared `anthropic-adapter` that normalizes incoming Claude Code requests
+  before any backend translation: coerces null message content to an empty
+  block list and flattens non-standard content blocks (e.g. `tool_reference`)
+  to text. This fixes a latent crash on null content that affected the Codex,
+  NIM, and LM Studio proxies.
+
+### Fixed
+- LM Studio context window is read from the native `/api/v0/models`
+  (`loaded_context_length`, the served window), since the OpenAI-compatible
+  `/v1/models` omits context entirely. The >200K override now applies for
+  LM Studio.
+- Codex: single-flight token refresh, stream termination on upstream failure,
+  and a guarded tool-argument parse.
+
 ## [0.7.0] - 2026-07-12
 
 ### Added
