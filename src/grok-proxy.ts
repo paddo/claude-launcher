@@ -204,26 +204,30 @@ async function duckDuckGoSearch(
   return results;
 }
 
-async function tavilySearch(
+// Prefer Exa when EXA_API_KEY is set (neural/semantic search, good for agent research).
+// Auth: x-api-key header (Authorization: Bearer also accepted by Exa).
+async function exaSearch(
   query: string,
   opts: { allowed_domains?: string[]; blocked_domains?: string[] } = {},
 ): Promise<SearchHit[] | null> {
-  const key = process.env.TAVILY_API_KEY;
+  const key = process.env.EXA_API_KEY;
   if (!key) return null;
   const body: Record<string, unknown> = {
-    api_key: key,
     query,
-    max_results: 8,
-    include_answer: false,
+    type: "auto",
+    numResults: 8,
   };
-  if (Array.isArray(opts.allowed_domains) && opts.allowed_domains.length) body.include_domains = opts.allowed_domains;
-  if (Array.isArray(opts.blocked_domains) && opts.blocked_domains.length) body.exclude_domains = opts.blocked_domains;
-  const res = await fetch("https://api.tavily.com/search", {
+  if (Array.isArray(opts.allowed_domains) && opts.allowed_domains.length) body.includeDomains = opts.allowed_domains;
+  if (Array.isArray(opts.blocked_domains) && opts.blocked_domains.length) body.excludeDomains = opts.blocked_domains;
+  const res = await fetch("https://api.exa.ai/search", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": key,
+    },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Tavily search failed (${res.status})`);
+  if (!res.ok) throw new Error(`Exa search failed (${res.status})`);
   const data = (await res.json()) as { results?: { title?: string; url?: string }[] };
   return (data.results || [])
     .map((r) => ({ title: r.title || r.url || "result", url: r.url || "" }))
@@ -235,8 +239,8 @@ async function runWebSearch(
   opts: { allowed_domains?: string[]; blocked_domains?: string[] } = {},
 ): Promise<SearchHit[]> {
   try {
-    const viaTavily = await tavilySearch(query, opts);
-    if (viaTavily && viaTavily.length) return viaTavily;
+    const viaExa = await exaSearch(query, opts);
+    if (viaExa && viaExa.length) return viaExa;
   } catch {
     // Fall through to DuckDuckGo.
   }
@@ -386,7 +390,7 @@ async function forward(body: string, auth: GrokAuth): Promise<Response> {
 //
 // WebSearch is special: Claude Code issues an Anthropic server-tool side-query
 // that Grok cannot execute, so we intercept those requests and fulfill them
-// with Tavily (if TAVILY_API_KEY is set) or DuckDuckGo HTML.
+// with Exa (if EXA_API_KEY is set) or DuckDuckGo HTML.
 export async function startGrokProxy(effort?: string): Promise<{ port: number; close: () => void }> {
   return new Promise((resolve) => {
     const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {

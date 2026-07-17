@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tools[0]: missing field description`. Grok rejects Anthropic server tools
   (`web_search_*`) that omit `description`/`input_schema`, and does not execute
   them even when the schema is fixed. The proxy now normalizes tool schemas and
-  fulfills WebSearch side-queries locally via Tavily (`TAVILY_API_KEY`) or
+  fulfills WebSearch side-queries locally via Exa (`EXA_API_KEY`) or
   DuckDuckGo HTML, returning the `server_tool_use` /
   `web_search_tool_result` blocks Claude Code expects.
 - NIM/LM Studio and Codex proxies default a missing tool `description` to the
