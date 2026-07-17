@@ -110,7 +110,8 @@ function buildResponsesBody(req: AnthropicRequest, effort: string): Record<strin
     body.tools = req.tools.map((t) => ({
       type: "function",
       name: t.name,
-      description: t.description,
+      // Some Claude Code tool payloads omit description; keep Codex shape valid.
+      description: typeof t.description === "string" ? t.description : t.name,
       strict: false,
       parameters: t.input_schema,
     }));

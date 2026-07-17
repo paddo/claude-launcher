@@ -141,7 +141,8 @@ function translateTools(tools: AnthropicTool[]): OpenAITool[] {
     type: "function" as const,
     function: {
       name: t.name,
-      description: t.description,
+      // Some Claude Code tool payloads omit description; keep OpenAI shape valid.
+      description: typeof t.description === "string" ? t.description : t.name,
       parameters: t.input_schema,
     },
   }));
