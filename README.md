@@ -41,6 +41,7 @@ claude-launcher -o                 # use OpenRouter backend
 claude-launcher -l                 # use Ollama backend (local)
 claude-launcher -n                 # use NVIDIA NIM backend
 claude-launcher -s                 # use LM Studio backend (local)
+claude-launcher -k                 # use Kimi backend (Kimi Code subscription)
 claude-launcher -- --resume        # pass args to claude
 ```
 
@@ -48,6 +49,9 @@ claude-launcher -- --resume        # pass args to claude
 
 - **Anthropic** - standard Claude Code, no extra config
 - **OpenRouter** - any model via OpenRouter; OAuth login or `OPENROUTER_API_KEY`
+- **Codex** - run Claude Code on a ChatGPT subscription (reuses the `codex` CLI login)
+- **Grok** - run Claude Code on an X/SuperGrok subscription (reuses the `grok` CLI login)
+- **Kimi** - run Claude Code on a Kimi Code subscription (reuses the `kimi` CLI login)
 - **Ollama** - local models, auto-filtered to tool-capable ones
 - **NVIDIA NIM** - cloud (`NVIDIA_API_KEY`) or self-hosted endpoints
 - **LM Studio** - local models via the LM Studio server (host must include `/v1`, e.g. `http://localhost:1234/v1`)

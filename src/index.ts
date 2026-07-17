@@ -2,13 +2,15 @@
 import { spawn } from "child_process";
 import { confirm, input } from "@inquirer/prompts";
 import { getConfig, saveConfig, type Backend } from "./config";
-import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels, fetchCodexModels, fetchGrokModels, formatContext, getOllamaContext, openAIModelContext, getLmStudioContext } from "./models";
-import { pickBackend, pickModel, pickOllamaModel, pickOpenAIModel, pickCodexModel, pickCodexEffort, pickGrokModel } from "./picker";
+import { fetchModels, filterAgenticModels, getNewModels, fetchOllamaModels, filterToolCapableOllamaModels, fetchOpenAIModels, fetchCodexModels, fetchGrokModels, fetchKimiModels, formatContext, getOllamaContext, openAIModelContext, getLmStudioContext } from "./models";
+import { pickBackend, pickModel, pickOllamaModel, pickOpenAIModel, pickCodexModel, pickCodexEffort, pickGrokModel, pickKimiModel } from "./picker";
 import { login } from "./auth";
 import { startProxy } from "./proxy";
 import { startCodexProxy } from "./codex-proxy";
 import { getGrokAuth } from "./grok-auth";
 import { startGrokProxy } from "./grok-proxy";
+import { getKimiAuth, getKimiIdentity, identityHeaders } from "./kimi-auth";
+import { startKimiProxy } from "./kimi-proxy";
 
 const args = process.argv.slice(2);
 
@@ -21,6 +23,7 @@ function parseArgs() {
     lmstudio: false,
     codex: false,
     grok: false,
+    kimi: false,
     backend: false,
     help: false,
     login: false,
@@ -48,6 +51,8 @@ function parseArgs() {
       flags.codex = true;
     } else if (arg === "--grok" || arg === "-g") {
       flags.grok = true;
+    } else if (arg === "--kimi" || arg === "-k") {
+      flags.kimi = true;
     } else if (arg === "--backend" || arg === "-b" || arg === "--model" || arg === "-m") {
       flags.backend = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -96,6 +101,7 @@ Options:
   -a, --anthropic   Use Anthropic backend
   -c, --codex       Use Codex backend (ChatGPT subscription)
   -g, --grok        Use Grok backend (X/SuperGrok subscription)
+  -k, --kimi        Use Kimi backend (Kimi Code subscription)
   -l, --ollama      Use Ollama backend (local)
   -n, --nim         Use NVIDIA NIM backend
   -s, --lmstudio    Use LM Studio backend (local)
@@ -161,6 +167,8 @@ async function main() {
     backend = "codex";
   } else if (flags.grok) {
     backend = "grok";
+  } else if (flags.kimi) {
+    backend = "kimi";
   } else if (config.backend) {
     backend = config.backend;
   } else {
@@ -569,6 +577,70 @@ async function main() {
     };
 
     console.log(`\nLaunching claude with ${grokModel}${effort ? ` @ ${effort} effort` : ""}, ${formatContext(contextWindow)} context (Grok sub via proxy :${proxy.port})...\n`);
+    launchClaude(passthrough, env, () => proxy.close());
+  } else if (backend === "kimi") {
+    let auth;
+    let identity;
+    try {
+      auth = await getKimiAuth();
+      identity = getKimiIdentity();
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+    let models;
+    try {
+      models = await fetchKimiModels(auth.token, identityHeaders(identity));
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+    if (models.length === 0) {
+      console.error("No Kimi models available. Run `kimi` once while signed in.");
+      process.exit(1);
+    }
+
+    let kimiModel = config.kimiModel;
+    if (flags.backend || !kimiModel || !models.some((m) => m.id === kimiModel)) {
+      kimiModel = await pickKimiModel(models, kimiModel);
+      config.kimiModel = kimiModel;
+      config.backend = "kimi";
+
+      // On a flat subscription there's no per-token saving from a cheaper
+      // model, so every role defaults to the picked model. Opt into a faster
+      // model per role below.
+      config.kimiOpusModel = kimiModel;
+      config.kimiSonnetModel = kimiModel;
+      config.kimiHaikuModel = kimiModel;
+
+      const customize = await confirm({ message: "Use a faster model for lighter roles?", default: false });
+      if (customize) {
+        config.kimiOpusModel = await pickKimiModel(models, config.kimiOpusModel, "Opus (complex tasks)");
+        config.kimiSonnetModel = await pickKimiModel(models, config.kimiSonnetModel, "Sonnet (lighter tasks)");
+        config.kimiHaikuModel = await pickKimiModel(models, config.kimiHaikuModel, "Haiku (quick/cheap)");
+      }
+
+      saveConfig(config);
+    }
+
+    const contextWindow = models.find((m) => m.id === kimiModel)?.contextWindow || 200000;
+
+    console.log("Starting Kimi proxy...");
+    const proxy = await startKimiProxy(identity);
+
+    const env = {
+      ...process.env,
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxy.port}`,
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "kimi",
+      ANTHROPIC_MODEL: kimiModel,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: config.kimiOpusModel || kimiModel,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: config.kimiSonnetModel || kimiModel,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: config.kimiHaikuModel || kimiModel,
+      ...contextOverrideEnv(contextWindow),
+    };
+
+    console.log(`\nLaunching claude with ${kimiModel}, ${formatContext(contextWindow)} context (Kimi sub via proxy :${proxy.port})...\n`);
     launchClaude(passthrough, env, () => proxy.close());
   } else {
     // Anthropic - just launch claude

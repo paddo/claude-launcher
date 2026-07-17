@@ -1,5 +1,5 @@
 import { search, select } from "@inquirer/prompts";
-import type { OpenRouterModel, OllamaModel, OpenAIModel, CodexModel, GrokModel } from "./models";
+import type { OpenRouterModel, OllamaModel, OpenAIModel, CodexModel, GrokModel, KimiModel } from "./models";
 import { formatContext, formatPrice, formatOllamaSize } from "./models";
 import type { Backend } from "./config";
 
@@ -12,6 +12,7 @@ export async function pickBackend(defaultValue?: Backend): Promise<Backend> {
       { name: "OpenRouter (multiple models)", value: "openrouter" as Backend },
       { name: "Codex (ChatGPT subscription)", value: "codex" as Backend },
       { name: "Grok (X/SuperGrok subscription)", value: "grok" as Backend },
+      { name: "Kimi (Kimi Code subscription)", value: "kimi" as Backend },
       { name: "Ollama (local)", value: "ollama" as Backend },
       { name: "NIM (NVIDIA)", value: "nim" as Backend },
       { name: "LM Studio (local)", value: "lmstudio" as Backend },
@@ -45,6 +46,17 @@ export async function pickGrokModel(models: GrokModel[], currentModel?: string, 
     default: currentModel,
     choices: models.map((m) => ({
       name: `${m.id} [${formatContext(m.contextWindow)}]`,
+      value: m.id,
+    })),
+  });
+}
+
+export async function pickKimiModel(models: KimiModel[], currentModel?: string, label?: string): Promise<string> {
+  return select({
+    message: label ? `${label}:` : "Select model:",
+    default: currentModel,
+    choices: models.map((m) => ({
+      name: m.contextWindow ? `${m.id} [${formatContext(m.contextWindow)}]` : m.id,
       value: m.id,
     })),
   });

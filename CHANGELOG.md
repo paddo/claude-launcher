@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Kimi backend (`-k` / `--kimi`): run Claude Code on a Kimi Code subscription.
+  Reuses the existing `~/.kimi-code` CLI login with OAuth token refresh,
+  discovers plan models live (`k3` at 1M context, `kimi-for-coding` variants),
+  sends the CLI identity headers the backend expects, and defaults every role
+  to the picked model.
+
 ## [0.8.0] - 2026-07-12
 
 ### Added

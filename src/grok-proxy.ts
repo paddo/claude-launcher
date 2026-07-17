@@ -140,7 +140,12 @@ export async function startGrokProxy(effort?: string): Promise<{ port: number; c
         res.end();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
+        if (res.headersSent) {
+          // Mid-stream failure: an error body would corrupt the SSE stream.
+          res.end();
+          return;
+        }
+        res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ type: "error", error: { type: "api_error", message } }));
       }
     });

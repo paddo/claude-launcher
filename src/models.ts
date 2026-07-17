@@ -216,6 +216,31 @@ export async function fetchGrokModels(token: string): Promise<GrokModel[]> {
   });
 }
 
+export interface KimiModel {
+  id: string;
+  contextWindow: number;
+}
+
+interface RawKimiModel {
+  id: string;
+  context_length?: number;
+}
+
+// Kimi's coding backend lists the models the signed-in plan can use, in
+// OpenAI-compatible shape. Discovering them live keeps the picker honest as
+// Moonshot reshuffles plan/model gating.
+export async function fetchKimiModels(token: string, headers: Record<string, string>): Promise<KimiModel[]> {
+  const res = await fetch("https://api.kimi.com/coding/v1/models", {
+    headers: { Authorization: `Bearer ${token}`, ...headers },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch Kimi models: ${res.status}`);
+  const data = (await res.json()) as { data?: RawKimiModel[] };
+  return (data.data ?? []).map((m) => ({
+    id: m.id,
+    contextWindow: m.context_length ?? 0,
+  }));
+}
+
 export async function fetchModels(): Promise<OpenRouterModel[]> {
   const res = await fetch("https://openrouter.ai/api/v1/models");
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
