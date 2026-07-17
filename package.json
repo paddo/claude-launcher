@@ -1,6 +1,6 @@
 {
   "name": "claude-launcher",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Launch Claude Code with multiple backends (Anthropic, OpenRouter, Ollama, NVIDIA NIM, LM Studio)",
   "type": "module",
   "bin": {
