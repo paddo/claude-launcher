@@ -171,7 +171,10 @@ export function fetchCodexModels(): CodexModel[] {
       slug: m.slug,
       displayName: m.display_name ?? m.slug,
       contextWindow: m.context_window ?? 0,
-      efforts: (m.supported_reasoning_levels ?? []).map((l) => (typeof l === "string" ? l : l.effort)),
+      // "ultra" is a codex-CLI orchestration mode (client-side task
+      // delegation), not a reasoning.effort the Responses API accepts - the
+      // API enum tops out at "max" and 400s on it.
+      efforts: (m.supported_reasoning_levels ?? []).map((l) => (typeof l === "string" ? l : l.effort)).filter((e) => e !== "ultra"),
       defaultEffort: m.default_reasoning_level ?? "medium",
     }));
 }

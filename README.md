@@ -42,6 +42,7 @@ claude-launcher -l                 # use Ollama backend (local)
 claude-launcher -n                 # use NVIDIA NIM backend
 claude-launcher -s                 # use LM Studio backend (local)
 claude-launcher -k                 # use Kimi backend (Kimi Code subscription)
+claude-launcher -x                 # use Mixed backend (Anthropic native + any backend per role slot)
 claude-launcher -- --resume        # pass args to claude
 ```
 
@@ -52,6 +53,7 @@ claude-launcher -- --resume        # pass args to claude
 - **Codex** - run Claude Code on a ChatGPT subscription (reuses the `codex` CLI login)
 - **Grok** - run Claude Code on an X/SuperGrok subscription (reuses the `grok` CLI login)
 - **Kimi** - run Claude Code on a Kimi Code subscription (reuses the `kimi` CLI login)
+- **Mixed** - any backend per role slot in one session: main/opus/sonnet/haiku each stay on the Claude Pro/Max subscription or route to Codex, Grok, Kimi, OpenRouter, Ollama, NIM, or LM Studio. Slot models use a `backend:model` prefix and requests are routed per model, so `/model codex:gpt-5.6-sol` or `/model ollama:qwen3` mid-session works.
 - **Ollama** - local models, auto-filtered to tool-capable ones
 - **NVIDIA NIM** - cloud (`NVIDIA_API_KEY`) or self-hosted endpoints
 - **LM Studio** - local models via the LM Studio server (host must include `/v1`, e.g. `http://localhost:1234/v1`)

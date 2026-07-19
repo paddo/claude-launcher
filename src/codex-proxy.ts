@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { randomUUID } from "crypto";
 import { getCodexTokens, getCodexVersion, type CodexTokens } from "./codex-auth";
 import { normalizeAnthropicContent } from "./anthropic-adapter";
+import { listenOnRandomPort, readJsonBody, writeApiError } from "./proxy-shared";
 
 const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -20,12 +21,13 @@ interface AnthropicMessage {
   content: string | AnthropicContentBlock[];
 }
 
-interface AnthropicRequest {
+export interface AnthropicRequest {
   model: string;
   system?: string | AnthropicContentBlock[];
   messages: AnthropicMessage[];
   tools?: { name: string; description?: string; input_schema: Record<string, unknown> }[];
   stream?: boolean;
+  output_config?: { effort?: string };
 }
 
 interface ResponseItem {
@@ -93,14 +95,21 @@ function messagesToInput(messages: AnthropicMessage[]): ResponseItem[] {
   return items;
 }
 
+// The enum the Codex Responses API accepts for reasoning.effort.
+const CODEX_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
 function buildResponsesBody(req: AnthropicRequest, effort: string): Record<string, unknown> {
+  // Claude Code's /effort selector arrives as output_config.effort; honoring
+  // it makes the native selector drive Codex reasoning too, with the
+  // launcher-configured effort as the fallback.
+  const reqEffort = req.output_config?.effort;
   const instructions = systemToText(req.system);
   const body: Record<string, unknown> = {
     model: req.model,
     input: messagesToInput(req.messages),
     tool_choice: "auto",
     parallel_tool_calls: true,
-    reasoning: { effort },
+    reasoning: { effort: reqEffort && CODEX_EFFORTS.has(reqEffort) ? reqEffort : effort },
     store: false,
     stream: true,
     include: ["reasoning.encrypted_content"],
@@ -280,83 +289,80 @@ async function consumeCodexStream(
   return result;
 }
 
-export async function startCodexProxy(effort: string): Promise<{ port: number; close: () => void }> {
-  return new Promise((resolve) => {
-    const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-      if (req.method !== "POST" || !req.url?.startsWith("/v1/messages")) {
-        res.writeHead(404);
-        res.end();
+export async function handleCodexMessages(anthropicReq: AnthropicRequest, res: ServerResponse, effort: string): Promise<void> {
+  try {
+    normalizeAnthropicContent(anthropicReq);
+    const body = buildResponsesBody(anthropicReq, effort);
+
+    let tokens = await getCodexTokens();
+    let upstream = await callCodex(body, tokens);
+    if (upstream.status === 401) {
+      tokens = await getCodexTokens(true);
+      upstream = await callCodex(body, tokens);
+    }
+
+    if (!upstream.ok) {
+      writeApiError(res, upstream.status, await upstream.text());
+      return;
+    }
+
+    if (anthropicReq.stream) {
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+      await consumeCodexStream(upstream, anthropicReq.model, res);
+      res.end();
+    } else {
+      const result = await consumeCodexStream(upstream, anthropicReq.model);
+      if (result.error && !result.text && result.toolCalls.length === 0) {
+        writeApiError(res, 502, result.error);
         return;
       }
-
-      try {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(chunk as Buffer);
-        const anthropicReq = JSON.parse(Buffer.concat(chunks).toString()) as AnthropicRequest;
-        normalizeAnthropicContent(anthropicReq);
-        const body = buildResponsesBody(anthropicReq, effort);
-
-        let tokens = await getCodexTokens();
-        let upstream = await callCodex(body, tokens);
-        if (upstream.status === 401) {
-          tokens = await getCodexTokens(true);
-          upstream = await callCodex(body, tokens);
+      const content: AnthropicContentBlock[] = [];
+      if (result.text) content.push({ type: "text", text: result.text });
+      for (const tc of result.toolCalls) {
+        let parsedArgs: Record<string, unknown> = {};
+        try {
+          parsedArgs = JSON.parse(tc.args || "{}");
+        } catch {
+          parsedArgs = {};
         }
-
-        if (!upstream.ok) {
-          const errText = await upstream.text();
-          res.writeHead(upstream.status, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: errText } }));
-          return;
-        }
-
-        if (anthropicReq.stream) {
-          res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-          await consumeCodexStream(upstream, anthropicReq.model, res);
-          res.end();
-        } else {
-          const result = await consumeCodexStream(upstream, anthropicReq.model);
-          if (result.error && !result.text && result.toolCalls.length === 0) {
-            res.writeHead(502, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: result.error } }));
-            return;
-          }
-          const content: AnthropicContentBlock[] = [];
-          if (result.text) content.push({ type: "text", text: result.text });
-          for (const tc of result.toolCalls) {
-            let parsedArgs: Record<string, unknown> = {};
-            try {
-              parsedArgs = JSON.parse(tc.args || "{}");
-            } catch {
-              parsedArgs = {};
-            }
-            content.push({ type: "tool_use", id: tc.id, name: tc.name, input: parsedArgs });
-          }
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(
-            JSON.stringify({
-              id: `msg_${randomUUID()}`,
-              type: "message",
-              role: "assistant",
-              content,
-              model: anthropicReq.model,
-              stop_reason: result.stopReason,
-              stop_sequence: null,
-              usage: { input_tokens: result.usage.input, output_tokens: result.usage.output },
-            })
-          );
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ type: "error", error: { type: "api_error", message } }));
+        content.push({ type: "tool_use", id: tc.id, name: tc.name, input: parsedArgs });
       }
-    });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          id: `msg_${randomUUID()}`,
+          type: "message",
+          role: "assistant",
+          content,
+          model: anthropicReq.model,
+          stop_reason: result.stopReason,
+          stop_sequence: null,
+          usage: { input_tokens: result.usage.input, output_tokens: result.usage.output },
+        })
+      );
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (res.headersSent) {
+      // Mid-stream failure: an error body would corrupt the SSE stream.
+      res.end();
+      return;
+    }
+    writeApiError(res, 500, message);
+  }
+}
 
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      resolve({ port, close: () => server.close() });
-    });
+export async function startCodexProxy(effort: string): Promise<{ port: number; close: () => void }> {
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    if (req.method !== "POST" || !req.url?.startsWith("/v1/messages")) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    const parsed = await readJsonBody<AnthropicRequest>(req, res);
+    if (!parsed) return;
+    await handleCodexMessages(parsed, res, effort);
   });
+
+  return listenOnRandomPort(server);
 }

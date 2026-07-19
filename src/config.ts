@@ -2,7 +2,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 
-export type Backend = "anthropic" | "openrouter" | "ollama" | "nim" | "lmstudio" | "codex" | "grok" | "kimi";
+export type Backend = "anthropic" | "openrouter" | "ollama" | "nim" | "lmstudio" | "codex" | "grok" | "kimi" | "mixed";
 
 export interface Config {
   backend?: Backend;
@@ -43,6 +43,14 @@ export interface Config {
   kimiSonnetModel?: string;
   kimiOpusModel?: string;
   kimiHaikuModel?: string;
+  // Mixed backend: each slot is a "backend:model" string (codex, grok, kimi,
+  // openrouter, ollama, nim, lmstudio), optionally "@effort"-suffixed to pin
+  // reasoning effort, or absent to stay on the Anthropic subscription default
+  // for that role.
+  mixedModel?: string;
+  mixedSonnetModel?: string;
+  mixedOpusModel?: string;
+  mixedHaikuModel?: string;
 }
 
 const CONFIG_DIR = join(homedir(), ".config", "claude-launcher");

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { getGrokAuth, type GrokAuth } from "./grok-auth";
 import { normalizeAnthropicContent } from "./anthropic-adapter";
+import { listenOnRandomPort, pipeFetchResponse, readJsonBody, writeApiError } from "./proxy-shared";
 
 const GROK_BASE_URL = "https://cli-chat-proxy.grok.com";
 
@@ -14,11 +15,12 @@ interface Message {
   content: string | ContentBlock[] | null;
 }
 
-interface AnthropicBody {
+export interface AnthropicBody {
   system?: string | ContentBlock[];
   messages?: Message[];
   tools?: { input_schema?: unknown }[];
   reasoning_effort?: string;
+  output_config?: { effort?: string };
   [key: string]: unknown;
 }
 
@@ -58,13 +60,7 @@ function fixToolSchemas(tools: { input_schema?: unknown }[]): void {
 // system-role turn 400s with "Invalid message role"). Claude Code emits
 // system-role turns, so their text is lifted into the top-level `system` field
 // where system instructions belong. Also injects the reasoning effort.
-function rewriteBody(payload: string, effort?: string): string {
-  let body: AnthropicBody;
-  try {
-    body = JSON.parse(payload) as AnthropicBody;
-  } catch {
-    return payload;
-  }
+function prepareBody(body: AnthropicBody, effort?: string): string {
   normalizeAnthropicContent(body);
   if (Array.isArray(body.messages)) {
     // Grok only accepts user/assistant in `messages`; lift other roles' text
@@ -82,7 +78,10 @@ function rewriteBody(payload: string, effort?: string): string {
     }
   }
   if (Array.isArray(body.tools)) fixToolSchemas(body.tools);
-  if (effort) body.reasoning_effort = effort;
+  // A pinned slot effort arrives via output_config.effort and outranks the
+  // backend-configured default.
+  const eff = body.output_config?.effort ?? effort;
+  if (eff) body.reasoning_effort = eff;
   return JSON.stringify(body);
 }
 
@@ -100,60 +99,44 @@ async function forward(body: string, auth: GrokAuth): Promise<Response> {
   });
 }
 
-// Grok Build's backend already speaks the Anthropic Messages API, so this proxy
-// does no translation. It only injects the session token and the client-version
-// header the backend requires (which Claude Code can't send itself), optionally
-// sets the reasoning effort, and streams the response straight through.
+// Grok Build's backend already speaks the Anthropic Messages API: no
+// translation, just the session token and client-version headers the backend
+// requires (which Claude Code can't send itself), an optional reasoning
+// effort, and a straight stream-through of the response.
+export async function handleGrokMessages(body: AnthropicBody, res: ServerResponse, effort?: string): Promise<void> {
+  try {
+    const payload = prepareBody(body, effort);
+
+    let auth = await getGrokAuth();
+    let upstream = await forward(payload, auth);
+    if (upstream.status === 401) {
+      auth = await getGrokAuth(true);
+      upstream = await forward(payload, auth);
+    }
+
+    await pipeFetchResponse(upstream, res);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (res.headersSent) {
+      // Mid-stream failure: an error body would corrupt the SSE stream.
+      res.end();
+      return;
+    }
+    writeApiError(res, 500, message);
+  }
+}
+
 export async function startGrokProxy(effort?: string): Promise<{ port: number; close: () => void }> {
-  return new Promise((resolve) => {
-    const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-      if (req.method !== "POST" || !req.url?.startsWith("/v1/messages")) {
-        res.writeHead(404);
-        res.end();
-        return;
-      }
-
-      try {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(chunk as Buffer);
-        const payload = rewriteBody(Buffer.concat(chunks).toString(), effort);
-
-        let auth = await getGrokAuth();
-        let upstream = await forward(payload, auth);
-        if (upstream.status === 401) {
-          auth = await getGrokAuth(true);
-          upstream = await forward(payload, auth);
-        }
-
-        res.writeHead(upstream.status, {
-          "Content-Type": upstream.headers.get("content-type") ?? "application/json",
-          "Cache-Control": "no-cache",
-        });
-        if (upstream.body) {
-          const reader = upstream.body.getReader();
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            res.write(Buffer.from(value));
-          }
-        }
-        res.end();
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (res.headersSent) {
-          // Mid-stream failure: an error body would corrupt the SSE stream.
-          res.end();
-          return;
-        }
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ type: "error", error: { type: "api_error", message } }));
-      }
-    });
-
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      resolve({ port, close: () => server.close() });
-    });
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    if (req.method !== "POST" || !req.url?.startsWith("/v1/messages")) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    const parsed = await readJsonBody<AnthropicBody>(req, res);
+    if (!parsed) return;
+    await handleGrokMessages(parsed, res, effort);
   });
+
+  return listenOnRandomPort(server);
 }

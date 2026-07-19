@@ -1,5 +1,6 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
+import { createServer, type ServerResponse } from "http";
 import { normalizeAnthropicContent } from "./anthropic-adapter";
+import { listenOnRandomPort, readJsonBody, writeApiError } from "./proxy-shared";
 
 interface AnthropicMessage {
   role: string;
@@ -16,7 +17,7 @@ interface AnthropicContentBlock {
   content?: string | AnthropicContentBlock[];
 }
 
-interface AnthropicRequest {
+export interface AnthropicRequest {
   model: string;
   max_tokens: number;
   system?: string | AnthropicContentBlock[];
@@ -400,67 +401,57 @@ async function handleNonStreaming(
   res.end(JSON.stringify(response));
 }
 
-async function readBody(req: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(chunk as Buffer);
+// Translates an Anthropic Messages request to an OpenAI Chat Completions call
+// against `host` and streams the translated response back.
+export async function handleOpenAIMessages(anthropicReq: AnthropicRequest, res: ServerResponse, host: string, apiKey?: string): Promise<void> {
+  try {
+    normalizeAnthropicContent(anthropicReq);
+    const openaiReq = buildOpenAIRequest(anthropicReq);
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+    const upstream = await fetch(`${host}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(openaiReq),
+    });
+
+    if (!upstream.ok) {
+      writeApiError(res, upstream.status, await upstream.text());
+      return;
+    }
+
+    if (anthropicReq.stream) {
+      await handleStreaming(upstream, res, anthropicReq.model);
+    } else {
+      await handleNonStreaming(upstream, res, anthropicReq.model);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (res.headersSent) {
+      // Mid-stream failure: an error body would corrupt the SSE stream.
+      res.end();
+      return;
+    }
+    writeApiError(res, 500, message);
   }
-  return Buffer.concat(chunks).toString();
 }
 
 export async function startProxy(host: string, apiKey?: string): Promise<{ port: number; close: () => void }> {
-  return new Promise((resolve) => {
-    const server = createServer(async (req, res) => {
-      // Only handle POST /v1/messages
-      if (req.method !== "POST" || !req.url?.startsWith("/v1/messages")) {
-        res.writeHead(404);
-        res.end();
-        return;
-      }
-
-      try {
-        const body = JSON.parse(await readBody(req));
-        const anthropicReq = body as AnthropicRequest;
-        normalizeAnthropicContent(anthropicReq);
-        const openaiReq = buildOpenAIRequest(anthropicReq);
-
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-        };
-        if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-
-        const upstream = await fetch(`${host}/chat/completions`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(openaiReq),
-        });
-
-        if (!upstream.ok) {
-          const errText = await upstream.text();
-          res.writeHead(upstream.status, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: errText } }));
-          return;
-        }
-
-        if (anthropicReq.stream) {
-          await handleStreaming(upstream, res, anthropicReq.model);
-        } else {
-          await handleNonStreaming(upstream, res, anthropicReq.model);
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ type: "error", error: { type: "api_error", message } }));
-      }
-    });
-
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      resolve({
-        port,
-        close: () => server.close(),
-      });
-    });
+  const server = createServer(async (req, res) => {
+    // Only handle POST /v1/messages
+    if (req.method !== "POST" || !req.url?.startsWith("/v1/messages")) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    const parsed = await readJsonBody<AnthropicRequest>(req, res);
+    if (!parsed) return;
+    await handleOpenAIMessages(parsed, res, host, apiKey);
   });
+
+  return listenOnRandomPort(server);
 }
