@@ -1,7 +1,7 @@
 {
   "name": "claude-launcher",
-  "version": "0.9.0",
-  "description": "Launch Claude Code with multiple backends (Anthropic, OpenRouter, Ollama, NVIDIA NIM, LM Studio)",
+  "version": "0.10.0",
+  "description": "Launch Claude Code with multiple backends (Anthropic, Codex, Grok, Kimi, OpenRouter, Ollama, NVIDIA NIM, LM Studio) or mix them per role",
   "type": "module",
   "bin": {
     "claude-launcher": "./dist/index.js"

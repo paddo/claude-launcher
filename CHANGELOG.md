@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-20
+
+### Added
+- `-b` model pickers now offer a "← Back (backend selection)" entry to return
+  to the backend list instead of committing to the first choice.
+- Claude Code's native `/effort` selector now drives Codex reasoning effort:
+  the proxy maps `output_config.effort` onto the Responses API enum, with the
+  configured backend effort as fallback.
+- Mixed slots can pin reasoning effort with a `@effort` model suffix
+  (`codex:gpt-5.6-sol@max`, `kimi:k3@high`): the slot picker offers "Obey
+  session /effort" or a pinned level, the pin is visible wherever the model
+  name shows, it works typed into `/model` mid-session, and it overrides the
+  session effort by rewriting `output_config.effort` before dispatch.
+- Mixed backend (`-x` / `--mixed`): route each Claude Code role slot
+  (main/opus/sonnet/haiku) to any backend in one session. Slots default to the
+  Anthropic Pro/Max subscription; any slot can route to Codex (ChatGPT sub),
+  Grok, Kimi, OpenRouter, Ollama, NIM, or LM Studio. Slot models are stored as
+  `backend:model` and a local proxy routes per request on that prefix -
+  translation backends reuse the existing per-backend handlers, unprefixed
+  models pass through byte-for-byte to api.anthropic.com so the OAuth session
+  keeps working. Every backend with usable credentials is registered at
+  launch, so `/model codex:gpt-5.6-sol` (or `kimi:k3`, `ollama:qwen3`)
+  mid-session reaches backends beyond the configured slots. `ANTHROPIC_AUTH_TOKEN` and
+  `ANTHROPIC_API_KEY` are stripped from the launch env - their presence alone
+  switches Claude Code out of subscription OAuth mode.
+
 ## [0.9.0] - 2026-07-18
 
 ### Added
