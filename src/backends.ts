@@ -16,6 +16,7 @@ import {
   formatOllamaSize,
   getOllamaContext,
   getLmStudioContext,
+  getLlamaCppContext,
   openAIModelContext,
   type CatalogModel,
 } from "./models";
@@ -540,6 +541,39 @@ export const BACKEND_DEFS: BackendDef[] = [
     mixed: {
       route: (config) => (p, res) =>
         handleOpenAIMessages(p as unknown as OpenAIProxyRequest, res, config.lmstudioHost || "http://localhost:1234/v1"),
+    },
+  },
+  {
+    id: "llamacpp",
+    longFlag: "--llamacpp",
+    shortFlag: "-p",
+    helpText: "Use llama.cpp backend (local)",
+    pickerLabel: "llama.cpp (local)",
+    keys: { model: "llamacppModel", sonnet: "llamacppSonnetModel", opus: "llamacppOpusModel", haiku: "llamacppHaikuModel" },
+    async loadCatalog(config) {
+      const host = config.llamacppHost || "http://localhost:8080";
+      console.log("Fetching llama.cpp models...");
+      let models;
+      try {
+        models = await fetchOpenAIModels(`${host}/v1`);
+      } catch {
+        throw new BackendError(`Failed to connect to llama.cpp at ${host}\nMake sure llama-server is running.`);
+      }
+      if (models.length === 0) {
+        throw new BackendError("No models found on llama.cpp server.");
+      }
+      return { models: models.map((m) => ({ id: m.id, choiceName: m.id, context: 0 })) };
+    },
+    roles: { message: "Configure role models? (ensures all requests stay local)", confirmDefault: true, order: ["sonnet", "opus", "haiku"] },
+    resolveContext: (_models, _modelId, config) => getLlamaCppContext(config.llamacppHost || "http://localhost:8080"),
+    // llama-server implements the Anthropic Messages API natively, so Claude
+    // Code talks to it directly - no translation proxy.
+    transport: async (config) => ({ baseUrl: config.llamacppHost || "http://localhost:8080" }),
+    credentials: () => ({ apiKey: "", authToken: "llamacpp" }),
+    describe: (model) => `\nLaunching claude with ${model} (llama.cpp)...\n`,
+    mixed: {
+      route: (config) => (p, res) =>
+        forwardAnthropic(`${config.llamacppHost || "http://localhost:8080"}/v1/messages`, {}, p, res),
     },
   },
 ];

@@ -35,6 +35,7 @@ export async function pickBackend(defs: BackendChoice[], defaultValue?: Backend)
       { name: label("ollama"), value: "ollama" as Backend },
       { name: label("nim"), value: "nim" as Backend },
       { name: label("lmstudio"), value: "lmstudio" as Backend },
+      { name: label("llamacpp"), value: "llamacpp" as Backend },
     ],
   });
 }
@@ -42,7 +43,7 @@ export async function pickBackend(defs: BackendChoice[], defaultValue?: Backend)
 // Returns the backend a mixed slot routes to, "claude" to stay on the
 // Anthropic subscription default, or BACK to exit to the backend selection.
 export async function pickMixedBackend(defs: BackendChoice[], label: string, current?: string, allowBack?: boolean): Promise<Backend | "claude" | typeof BACK> {
-  const order: Backend[] = ["codex", "grok", "kimi", "openrouter", "ollama", "nim", "lmstudio"];
+  const order: Backend[] = ["codex", "grok", "kimi", "openrouter", "ollama", "nim", "lmstudio", "llamacpp"];
   return select({
     message: `${label} backend:`,
     default: (current ?? "claude") as Backend | "claude",

@@ -2,7 +2,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 
-export type Backend = "anthropic" | "openrouter" | "ollama" | "nim" | "lmstudio" | "codex" | "grok" | "kimi" | "mixed";
+export type Backend = "anthropic" | "openrouter" | "ollama" | "nim" | "lmstudio" | "llamacpp" | "codex" | "grok" | "kimi" | "mixed";
 
 export interface Config {
   backend?: Backend;
@@ -29,6 +29,13 @@ export interface Config {
   lmstudioSonnetModel?: string;
   lmstudioOpusModel?: string;
   lmstudioHaikuModel?: string;
+  // Server root without /v1; llama-server speaks the Anthropic Messages API
+  // natively, so this is passed to Claude Code as ANTHROPIC_BASE_URL as-is.
+  llamacppHost?: string;
+  llamacppModel?: string;
+  llamacppSonnetModel?: string;
+  llamacppOpusModel?: string;
+  llamacppHaikuModel?: string;
   codexModel?: string;
   codexSonnetModel?: string;
   codexOpusModel?: string;

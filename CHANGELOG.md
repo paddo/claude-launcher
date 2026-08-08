@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- llama.cpp backend (`-p`/`--llamacpp`): points Claude Code directly at a
+  `llama-server` instance. llama-server implements the Anthropic Messages API
+  natively, so no translation proxy is involved; the served context window is
+  read from `/props`. Also available as a mixed-mode slot backend
+  (`llamacpp:<model>`).
+
+### Changed
+- Backend launch flows unified behind a declarative registry; adding a
+  backend is now a single entry. Config file format unchanged.
+
 ## [0.10.0] - 2026-07-20
 
 ### Added

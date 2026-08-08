@@ -137,6 +137,20 @@ export async function getLmStudioContext(host: string, modelId: string): Promise
   }
 }
 
+// llama-server's /v1/models reports no context either; /props exposes the
+// per-slot n_ctx actually being served. Returns 0 when unavailable.
+export async function getLlamaCppContext(host: string): Promise<number> {
+  try {
+    const res = await fetch(`${host}/props`);
+    if (!res.ok) return 0;
+    const data = (await res.json()) as { default_generation_settings?: { n_ctx?: number } };
+    const n = data.default_generation_settings?.n_ctx;
+    return typeof n === "number" ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
 interface OpenAIModelsResponse {
   data: OpenAIModel[];
 }

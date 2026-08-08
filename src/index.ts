@@ -66,6 +66,7 @@ function showHelp() {
     defLine("ollama"),
     defLine("nim"),
     defLine("lmstudio"),
+    defLine("llamacpp"),
     "  -h, --help        Show this help",
   ].join("\n");
 
