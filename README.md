@@ -58,7 +58,7 @@ claude-launcher -- --resume        # pass args to claude
 - **Ollama** - local models, auto-filtered to tool-capable ones
 - **NVIDIA NIM** - cloud (`NVIDIA_API_KEY`) or self-hosted endpoints
 - **LM Studio** - local models via the LM Studio server (host must include `/v1`, e.g. `http://localhost:1234/v1`)
-- **llama.cpp** - a local (or LAN) `llama-server` instance; host is the server root, e.g. `http://localhost:8080`
+- **llama.cpp** - a local or LAN `llama-server` instance; setup prompts for the server URL (server root, e.g. `http://localhost:8080` or `http://my-box.local:8080`)
 
 NIM and LM Studio run through an in-process Anthropic-to-OpenAI translation proxy. Ollama and llama.cpp speak the Anthropic Messages API natively, so Claude Code talks to them directly.
 

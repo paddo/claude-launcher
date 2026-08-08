@@ -65,6 +65,8 @@ export interface BackendDef {
     effort?: keyof Config;
   };
   loadCatalog(config: Config): Promise<Catalog>;
+  // Prompt for the server host during interactive setup (LAN servers).
+  host?: { key: keyof Config; default: string; message: string };
   // Fuzzy search picker instead of a plain select (large catalogs).
   searchPicker?: boolean;
   // Skip the "saved model still in catalog" check before reusing it.
@@ -123,6 +125,15 @@ const ROLE_LABELS: Record<RoleSlot, string> = {
 };
 
 export async function runBackend(def: BackendDef, config: Config, interactive: boolean, passthrough: string[]): Promise<"back" | void> {
+  // The host must be known before the catalog fetch, so this prompts on the
+  // pre-fetch signals of a setup run: -b, or no model saved yet.
+  if (def.host && (interactive || !cfgGet(config, def.keys.model))) {
+    const current = cfgGet(config, def.host.key);
+    const host = await input({ message: def.host.message, default: current || def.host.default });
+    cfgSet(config, def.host.key, host.replace(/\/+$/, ""));
+    saveConfig(config);
+  }
+
   let cat: Catalog;
   try {
     cat = await def.loadCatalog(config);
@@ -550,6 +561,7 @@ export const BACKEND_DEFS: BackendDef[] = [
     helpText: "Use llama.cpp backend (local)",
     pickerLabel: "llama.cpp (local)",
     keys: { model: "llamacppModel", sonnet: "llamacppSonnetModel", opus: "llamacppOpusModel", haiku: "llamacppHaikuModel" },
+    host: { key: "llamacppHost", default: "http://localhost:8080", message: "llama-server URL (server root, no /v1):" },
     async loadCatalog(config) {
       const host = config.llamacppHost || "http://localhost:8080";
       console.log("Fetching llama.cpp models...");
