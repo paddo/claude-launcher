@@ -2,6 +2,17 @@ import { homedir } from "os";
 import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 
+// Backend-agnostic model shape the pickers and backend registry work with;
+// each backend's loadCatalog normalizes its native catalog into this.
+export interface CatalogModel {
+  id: string;
+  choiceName: string;
+  description?: string;
+  context: number;
+  efforts?: string[];
+  defaultEffort?: string;
+}
+
 export interface OpenRouterModel {
   id: string;
   name: string;
