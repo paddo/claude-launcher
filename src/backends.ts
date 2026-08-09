@@ -25,7 +25,7 @@ import { login } from "./auth";
 import { startProxy, handleOpenAIMessages, type AnthropicRequest as OpenAIProxyRequest } from "./proxy";
 import { startCodexProxy, handleCodexMessages, type AnthropicRequest as CodexRequest } from "./codex-proxy";
 import { forwardAnthropic } from "./proxy-shared";
-import { getGrokAuth, type GrokAuth } from "./grok-auth";
+import { getGrokAuth, hasGrokAuth, type GrokAuth } from "./grok-auth";
 import { startGrokProxy, handleGrokMessages, type AnthropicBody as GrokBody } from "./grok-proxy";
 import { getKimiAuth, getKimiIdentity, identityHeaders, type KimiIdentity } from "./kimi-auth";
 import { startKimiProxy, handleKimiMessages, type KimiBody } from "./kimi-proxy";
@@ -103,6 +103,10 @@ export interface BackendDef<A = unknown> {
   describe(model: string, context: number, port: number | undefined, config: Config): string;
   mixed: {
     route(config: Config): MixedHandler | undefined;
+    // Slot models may carry a "@effort" pin. Only these backends get "@"
+    // suffixes appended and stripped, so model ids that contain "@"
+    // themselves survive on the others.
+    effortSuffix?: boolean;
     // Efforts offered when pinning a mixed slot; defaults to the catalog
     // entry's efforts.
     slotEfforts?(model: CatalogModel): string[];
@@ -486,7 +490,17 @@ export const BACKEND_DEFS: BackendDef[] = [
     describe: (model, context, port, config) =>
       `\nLaunching claude with ${model} @ ${config.codexEffort ?? "medium"} effort, ${formatContext(context)} context (Codex sub via proxy :${port})...\n`,
     mixed: {
-      route: () => (p, res) => handleCodexMessages(p as unknown as CodexRequest, res, "medium"),
+      route(config) {
+        // No Codex login/model cache; codex: models fall through to
+        // Anthropic's model error instead of failing inside the handler.
+        try {
+          fetchCodexModels();
+        } catch {
+          return undefined;
+        }
+        return (p, res) => handleCodexMessages(p as unknown as CodexRequest, res, config.codexEffort ?? "medium");
+      },
+      effortSuffix: true,
     },
   }),
   defineBackend<GrokAuth>({
@@ -523,7 +537,12 @@ export const BACKEND_DEFS: BackendDef[] = [
     describe: (model, context, port, config) =>
       `\nLaunching claude with ${model}${config.grokEffort ? ` @ ${config.grokEffort} effort` : ""}, ${formatContext(context)} context (Grok sub via proxy :${port})...\n`,
     mixed: {
-      route: (config) => (p, res) => handleGrokMessages(p as unknown as GrokBody, res, config.grokEffort),
+      route(config) {
+        // No Grok login; grok: models fall through to Anthropic's model error.
+        if (!hasGrokAuth()) return undefined;
+        return (p, res) => handleGrokMessages(p as unknown as GrokBody, res, config.grokEffort);
+      },
+      effortSuffix: true,
     },
   }),
   defineBackend<{ token: string; identity: KimiIdentity }>({
@@ -572,6 +591,7 @@ export const BACKEND_DEFS: BackendDef[] = [
           return undefined;
         }
       },
+      effortSuffix: true,
       // Kimi's catalog exposes no effort levels; the pin is forwarded in
       // output_config.effort and support depends on the model.
       slotEfforts: () => ["low", "medium", "high", "max"],

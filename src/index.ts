@@ -3,7 +3,7 @@ import { getConfig, saveConfig, type Backend } from "./config";
 import { formatContext, type CatalogModel } from "./models";
 import { pickBackend, pickMixedBackend, pickSlotEffort, pickCatalogModel, BACK } from "./picker";
 import { login } from "./auth";
-import { startMixedProxy, type MixedHandler } from "./mixed-proxy";
+import { startMixedProxy, type MixedRoute } from "./mixed-proxy";
 import { BACKEND_DEFS, defById, runBackend, resolveContext, ensureHost, loadModels, launchClaude, contextOverrideEnv } from "./backends";
 
 const args = process.argv.slice(2);
@@ -155,14 +155,16 @@ async function main() {
       if (b === BACK) return BACK;
       if (b === "claude") return undefined;
       const slotDef = defById(b)!;
-      const curModel = current && curBackend === b ? current.slice(b.length + 1).replace(/@[^@]*$/, "") : undefined;
+      const stripEffort = (s: string) => (slotDef.mixed.effortSuffix ? s.replace(/@[^@]*$/, "") : s);
+      const curModel = current && curBackend === b ? stripEffort(current.slice(b.length + 1)) : undefined;
       await ensureHost(slotDef, config, false);
       const models = await modelsFor(b);
       const model = await pickCatalogModel(models, { current: curModel, label, search: slotDef.searchPicker });
       // An effort pick is encoded into the slot as "model@effort" so the pin
-      // is visible wherever the model name shows (launch line, /model).
+      // is visible wherever the model name shows (launch line, /model). Only
+      // effortSuffix backends may carry the pin - the proxy only strips theirs.
       const picked = models.find((m) => m.id === model)!;
-      const efforts = slotDef.mixed.slotEfforts?.(picked) ?? picked.efforts ?? [];
+      const efforts = slotDef.mixed.effortSuffix ? (slotDef.mixed.slotEfforts?.(picked) ?? picked.efforts ?? []) : [];
       const effort = efforts.length ? await pickSlotEffort(efforts) : undefined;
       return `${b}:${effort ? `${model}@${effort}` : model}`;
     };
@@ -191,10 +193,10 @@ async function main() {
     // configured slots, so /model backend:model mid-session can reach any of
     // them. Handlers resolve auth per request, so a backend the user never
     // routes to costs nothing.
-    const routes: Record<string, MixedHandler> = {};
+    const routes: Record<string, MixedRoute> = {};
     for (const d of BACKEND_DEFS) {
       const handler = d.mixed.route(config);
-      if (handler) routes[d.id] = handler;
+      if (handler) routes[d.id] = { handler, effortSuffix: d.mixed.effortSuffix };
     }
 
     // The context override follows the main slot's model: the interactive
@@ -204,10 +206,10 @@ async function main() {
     const mainSlot = config.mixedModel;
     if (mainSlot && validSlot(mainSlot)) {
       const mb = prefixOf(mainSlot) as Backend;
-      const mm = mainSlot.slice(mb.length + 1).replace(/@[^@]*$/, "");
+      const mainDef = defById(mb)!;
+      const mm = mainDef.mixed.effortSuffix ? mainSlot.slice(mb.length + 1).replace(/@[^@]*$/, "") : mainSlot.slice(mb.length + 1);
       try {
-        const mixedDef = defById(mb)!;
-        mainContext = await resolveContext(mixedDef, mm, config, () => modelsFor(mb));
+        mainContext = await resolveContext(mainDef, mm, config, () => modelsFor(mb));
       } catch (err) {
         // Ctrl-C inside a lazily-loaded catalog's prompts must still abort.
         if (err instanceof Error && err.name === "ExitPromptError") throw err;

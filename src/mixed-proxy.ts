@@ -8,6 +8,13 @@ const ANTHROPIC_HOST = "api.anthropic.com";
 // already stripped from the model field.
 export type RoutedRequest = { model: string; output_config?: { effort?: string } } & Record<string, unknown>;
 export type MixedHandler = (parsed: RoutedRequest, res: ServerResponse) => Promise<void>;
+// effortSuffix marks backends whose slot models may carry a "@effort" pin;
+// only their "@" suffixes are stripped, so model ids that legitimately
+// contain "@" (LM Studio quant tags, HF revisions) survive on other backends.
+export interface MixedRoute {
+  handler: MixedHandler;
+  effortSuffix?: boolean;
+}
 
 // Hop-by-hop headers describe one connection, not the message; forwarding
 // them alongside the re-framed body (e.g. transfer-encoding: chunked next to
@@ -47,7 +54,7 @@ function passthrough(req: IncomingMessage, body: Buffer, res: ServerResponse): v
 // falls back to estimation) - the translation backends have no count
 // endpoint, and a uniform answer beats per-backend guesses. Everything else,
 // including unprefixed Claude models, passes through to Anthropic.
-export async function startMixedProxy(routes: Record<string, MixedHandler>): Promise<{ port: number; close: () => void }> {
+export async function startMixedProxy(routes: Record<string, MixedRoute>): Promise<{ port: number; close: () => void }> {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // The request stream's async iterator rejects on client abort; uncaught,
     // that rejection kills the whole proxy process under bun.
@@ -72,8 +79,8 @@ export async function startMixedProxy(routes: Record<string, MixedHandler>): Pro
       // (openrouter:vendor/model:free, ollama:qwen3:8b).
       const sep = typeof parsed?.model === "string" ? parsed.model.indexOf(":") : -1;
       if (parsed && sep > 0) {
-        const handler = routes[parsed.model.slice(0, sep)];
-        if (handler) {
+        const route = routes[parsed.model.slice(0, sep)];
+        if (route) {
           if (req.url.startsWith("/v1/messages/count_tokens")) {
             res.writeHead(404);
             res.end();
@@ -82,12 +89,12 @@ export async function startMixedProxy(routes: Record<string, MixedHandler>): Pro
             // A "@effort" suffix pins reasoning effort for this slot: it is
             // written into output_config.effort, overriding the session's
             // /effort value, and each handler picks it up from there.
-            const at = parsed.model.lastIndexOf("@");
+            const at = route.effortSuffix ? parsed.model.lastIndexOf("@") : -1;
             if (at > 0) {
               parsed.output_config = { ...parsed.output_config, effort: parsed.model.slice(at + 1) };
               parsed.model = parsed.model.slice(0, at);
             }
-            await handler(parsed, res);
+            await route.handler(parsed, res);
           }
           return;
         }
