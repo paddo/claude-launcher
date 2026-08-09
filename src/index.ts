@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 import { getConfig, saveConfig, type Backend } from "./config";
-import { formatContext } from "./models";
+import { formatContext, type CatalogModel } from "./models";
 import { pickBackend, pickMixedBackend, pickSlotEffort, pickCatalogModel, BACK } from "./picker";
 import { login } from "./auth";
 import { startMixedProxy, type MixedHandler } from "./mixed-proxy";
-import { BACKEND_DEFS, defById, runBackend, resolveContext, ensureHost, launchClaude, contextOverrideEnv, type Catalog } from "./backends";
+import { BACKEND_DEFS, defById, runBackend, resolveContext, ensureHost, loadModels, launchClaude, contextOverrideEnv } from "./backends";
 
 const args = process.argv.slice(2);
 
@@ -139,14 +139,14 @@ async function main() {
 
     // Catalogs and auth are fetched lazily so setup only touches the backends
     // actually routed to.
-    const catalogs = new Map<Backend, Catalog>();
-    const catalogFor = async (id: Backend): Promise<Catalog> => {
-      let cat = catalogs.get(id);
-      if (!cat) {
-        cat = await defById(id)!.loadCatalog(config);
-        catalogs.set(id, cat);
+    const catalogs = new Map<Backend, CatalogModel[]>();
+    const modelsFor = async (id: Backend): Promise<CatalogModel[]> => {
+      let models = catalogs.get(id);
+      if (!models) {
+        ({ models } = await loadModels(defById(id)!, config));
+        catalogs.set(id, models);
       }
-      return cat;
+      return models;
     };
 
     const pickSlot = async (label: string, current?: string, allowBack?: boolean): Promise<string | undefined | typeof BACK> => {
@@ -157,11 +157,11 @@ async function main() {
       const slotDef = defById(b)!;
       const curModel = current && curBackend === b ? current.slice(b.length + 1).replace(/@[^@]*$/, "") : undefined;
       await ensureHost(slotDef, config, false);
-      const cat = await catalogFor(b);
-      const model = await pickCatalogModel(cat.models, { current: curModel, label, search: slotDef.searchPicker });
+      const models = await modelsFor(b);
+      const model = await pickCatalogModel(models, { current: curModel, label, search: slotDef.searchPicker });
       // An effort pick is encoded into the slot as "model@effort" so the pin
       // is visible wherever the model name shows (launch line, /model).
-      const picked = cat.models.find((m) => m.id === model)!;
+      const picked = models.find((m) => m.id === model)!;
       const efforts = slotDef.mixed.slotEfforts?.(picked) ?? picked.efforts ?? [];
       const effort = efforts.length ? await pickSlotEffort(efforts) : undefined;
       return `${b}:${effort ? `${model}@${effort}` : model}`;
@@ -207,7 +207,7 @@ async function main() {
       const mm = mainSlot.slice(mb.length + 1).replace(/@[^@]*$/, "");
       try {
         const mixedDef = defById(mb)!;
-        mainContext = await resolveContext(mixedDef, mm, config, async () => (await catalogFor(mb)).models);
+        mainContext = await resolveContext(mixedDef, mm, config, () => modelsFor(mb));
       } catch (err) {
         // Ctrl-C inside a lazily-loaded catalog's prompts must still abort.
         if (err instanceof Error && err.name === "ExitPromptError") throw err;
