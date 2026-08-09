@@ -41,7 +41,7 @@ claude-launcher -o                 # use OpenRouter backend
 claude-launcher -l                 # use Ollama backend (local)
 claude-launcher -n                 # use NVIDIA NIM backend
 claude-launcher -s                 # use LM Studio backend (local)
-claude-launcher -p                 # use llama.cpp backend (local)
+claude-launcher --llamacpp         # use llama.cpp backend (local)
 claude-launcher -k                 # use Kimi backend (Kimi Code subscription)
 claude-launcher -x                 # use Mixed backend (Anthropic native + any backend per role slot)
 claude-launcher -- --resume        # pass args to claude

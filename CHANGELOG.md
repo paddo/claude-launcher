@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- llama.cpp backend (`-p`/`--llamacpp`): points Claude Code directly at a
+- llama.cpp backend (`--llamacpp`, long-only so claude's `-p`/`--print`
+  still passes through): points Claude Code directly at a
   `llama-server` instance. llama-server implements the Anthropic Messages API
   natively, so no translation proxy is involved; the served context window is
   read from `/props`. Setup prompts for the server URL, so LAN hosts work
