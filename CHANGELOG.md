@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-09
+
 ### Added
 - llama.cpp backend (`--llamacpp`, long-only so claude's `-p`/`--print`
   still passes through): points Claude Code directly at a
