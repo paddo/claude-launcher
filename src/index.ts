@@ -4,7 +4,7 @@ import { formatContext, type CatalogModel } from "./models";
 import { pickBackend, pickMixedBackend, pickSlotEffort, pickCatalogModel, BACK } from "./picker";
 import { login } from "./auth";
 import { startMixedProxy, type MixedRoute } from "./mixed-proxy";
-import { BACKEND_DEFS, defById, runBackend, resolveContext, ensureHost, loadModels, launchClaude, contextOverrideEnv } from "./backends";
+import { BACKEND_DEFS, defById, runBackend, resolveContext, ensureHost, loadModels, launchClaude, contextOverrideEnv, type BackendDef } from "./backends";
 
 const args = process.argv.slice(2);
 
@@ -50,19 +50,16 @@ function parseArgs() {
 }
 
 function showHelp() {
-  // Registry order, with the launcher-mode flags (-a, -x) interleaved to
+  // Registry order, with the launcher-mode flags (-a, -x) anchored by id to
   // match the backend picker.
-  const defLines = BACKEND_DEFS.map((d) => `  ${d.shortFlag ? `${d.shortFlag}, ` : "    "}${d.longFlag}`.padEnd(20) + d.helpText);
-  const options = [
-    "  -b, --backend     Pick backend and model interactively",
-    "  -m, --model       Alias for -b",
-    defLines[0],
-    "  -a, --anthropic   Use Anthropic backend",
-    defLines[1],
-    "  -x, --mixed       Use Mixed backend (Anthropic native + any backend per role slot)",
-    ...defLines.slice(2),
-    "  -h, --help        Show this help",
-  ].join("\n");
+  const lines = ["  -b, --backend     Pick backend and model interactively", "  -m, --model       Alias for -b"];
+  for (const d of BACKEND_DEFS) {
+    lines.push(`  ${d.shortFlag ? `${d.shortFlag}, ` : "    "}${d.longFlag}`.padEnd(20) + d.helpText);
+    if (d.id === "openrouter") lines.push("  -a, --anthropic   Use Anthropic backend");
+    if (d.id === "codex") lines.push("  -x, --mixed       Use Mixed backend (Anthropic native + any backend per role slot)");
+  }
+  lines.push("  -h, --help        Show this help");
+  const options = lines.join("\n");
 
   console.log(`claude-launcher - Launch Claude Code with multiple backends
 
@@ -82,6 +79,7 @@ Examples:
   claude-launcher -l                 # use Ollama local backend
   claude-launcher -n                 # use NVIDIA NIM backend
   claude-launcher -s                 # use LM Studio local backend
+  claude-launcher --llamacpp         # use llama.cpp local backend
   claude-launcher -- --resume        # pass args to claude`);
 }
 
@@ -149,14 +147,17 @@ async function main() {
       return models;
     };
 
+    // Strip a "model@effort" pin; only effortSuffix backends carry one, so
+    // ids that legitimately contain "@" survive on the others.
+    const stripEffort = (def: BackendDef, s: string) => (def.mixed.effortSuffix ? s.replace(/@[^@]*$/, "") : s);
+
     const pickSlot = async (label: string, current?: string, allowBack?: boolean): Promise<string | undefined | typeof BACK> => {
       const curBackend = current && validSlot(current) ? (prefixOf(current) as Backend) : undefined;
       const b = await pickMixedBackend(BACKEND_DEFS, label, curBackend, allowBack);
       if (b === BACK) return BACK;
       if (b === "claude") return undefined;
       const slotDef = defById(b)!;
-      const stripEffort = (s: string) => (slotDef.mixed.effortSuffix ? s.replace(/@[^@]*$/, "") : s);
-      const curModel = current && curBackend === b ? stripEffort(current.slice(b.length + 1)) : undefined;
+      const curModel = current && curBackend === b ? stripEffort(slotDef, current.slice(b.length + 1)) : undefined;
       await ensureHost(slotDef, config, false);
       const models = await modelsFor(b);
       const model = await pickCatalogModel(models, { current: curModel, label, search: slotDef.searchPicker });
@@ -195,6 +196,7 @@ async function main() {
     // routes to costs nothing.
     const routes: Record<string, MixedRoute> = {};
     for (const d of BACKEND_DEFS) {
+      if (d.hasAuth && !d.hasAuth(config)) continue;
       const handler = d.mixed.route(config);
       if (handler) routes[d.id] = { handler, effortSuffix: d.mixed.effortSuffix };
     }
@@ -204,10 +206,14 @@ async function main() {
     // /model to a smaller-window model mid-session keeps the raised cap.
     let mainContext = 0;
     const mainSlot = config.mixedModel;
-    if (mainSlot && validSlot(mainSlot)) {
+    // Resolve only through a registered route: registration is the
+    // non-interactive credential check, so a missing key (openrouter OAuth,
+    // NIM key prompt inside auth()) can't stall the launch on a prompt - and
+    // an unroutable slot has no use for the override anyway.
+    if (mainSlot && validSlot(mainSlot) && routes[prefixOf(mainSlot)]) {
       const mb = prefixOf(mainSlot) as Backend;
       const mainDef = defById(mb)!;
-      const mm = mainDef.mixed.effortSuffix ? mainSlot.slice(mb.length + 1).replace(/@[^@]*$/, "") : mainSlot.slice(mb.length + 1);
+      const mm = stripEffort(mainDef, mainSlot.slice(mb.length + 1));
       try {
         mainContext = await resolveContext(mainDef, mm, config, () => modelsFor(mb));
       } catch (err) {

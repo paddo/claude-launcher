@@ -57,8 +57,8 @@ export interface BackendDef<A = unknown> {
   id: Backend;
   longFlag: string;
   // Omitted when every safe letter is taken: claude's own short flags (-p
-  // print, -r resume) pass through to the launched CLI and must not be
-  // shadowed by new backends.
+  // print, -r resume) pass through to the launched CLI and new backends must
+  // not shadow them (-c/-m predate this rule and stay for compatibility).
   shortFlag?: string;
   helpText: string;
   pickerLabel: string;
@@ -74,6 +74,9 @@ export interface BackendDef<A = unknown> {
   // Acquire credentials; may prompt (env-var offers, OAuth, key input) and
   // persist to config. Absent when the backend needs none up front.
   auth?(config: Config): Promise<A>;
+  // Cheap, non-interactive credential presence check. Gates mixed-route
+  // registration; absent means always available.
+  hasAuth?(config: Config): boolean;
   catalog(config: Config, auth: A): Promise<CatalogModel[]>;
   // Prompt for the server host during interactive setup (LAN servers).
   host?: { key: StringKey; default: string; message: string };
@@ -90,7 +93,6 @@ export interface BackendDef<A = unknown> {
     order: RoleSlot[];
     preConfigure?(config: Config, models: CatalogModel[]): void;
   };
-  pickEffort?: boolean;
   // Context window for the chosen model; defaults to a catalog lookup. The
   // catalog is passed lazily so backends that resolve context from the server
   // or config alone never force a catalog load (mixed launches).
@@ -117,8 +119,12 @@ export interface BackendDef<A = unknown> {
 // an erased def passes the auth value straight back into the same def.
 const defineBackend = <A>(def: BackendDef<A>): BackendDef => def as unknown as BackendDef;
 
-// Backends whose role-model config keys follow the `<id>Model` naming scheme.
-type RoleKeyedBackend = { [I in Backend]: `${I}Model` extends keyof Config ? I : never }[Backend];
+// Backends whose four role-model config keys all follow the `<id>Model`
+// naming scheme ("mixed" has the keys but is a launcher mode, not a backend).
+type RoleKeyedBackend = Exclude<
+  { [I in Backend]: (`${I}Model` | `${I}SonnetModel` | `${I}OpusModel` | `${I}HaikuModel`) extends StringKey ? I : never }[Backend],
+  "mixed"
+>;
 
 const roleKeys = (id: RoleKeyedBackend): BackendDef["keys"] => ({
   model: `${id}Model` as StringKey,
@@ -157,6 +163,12 @@ const ROLE_LABELS: Record<RoleSlot, string> = {
 const LOCAL_ROLES: BackendDef["roles"] = {
   message: "Configure role models? (ensures all requests stay local)",
   confirmDefault: true,
+  order: ["sonnet", "opus", "haiku"],
+};
+
+const DEFAULT_ROLES: BackendDef["roles"] = {
+  message: "Configure role models?",
+  confirmDefault: false,
   order: ["sonnet", "opus", "haiku"],
 };
 
@@ -229,7 +241,7 @@ export async function runBackend(def: BackendDef, config: Config, interactive: b
       }
     }
 
-    if (def.pickEffort && K.effort) {
+    if (K.effort) {
       const selected = models.find((m) => m.id === model);
       if (selected?.efforts?.length) {
         cfgSet(config, K.effort, await pickCodexEffort(selected.efforts, cfgGet(config, K.effort) ?? selected.defaultEffort));
@@ -297,8 +309,7 @@ function nativeAnthropicBackend(opts: {
 }
 
 // OpenAI-compatible endpoint behind the in-process Anthropic-to-OpenAI
-// translation proxy. The next cloud backend of this shape (Groq, Cerebras,
-// Together, vLLM...) should be one call to this factory plus config keys.
+// translation proxy.
 function openAICompatibleBackend(opts: {
   id: RoleKeyedBackend;
   longFlag: string;
@@ -307,23 +318,21 @@ function openAICompatibleBackend(opts: {
   pickerLabel: string;
   host: (config: Config) => string;
   hostPrompt?: BackendDef["host"];
-  // Resolves the API key; may prompt. The upstream key is what's actually
-  // sent; absent means an unauthenticated endpoint.
-  auth?: (config: Config) => Promise<string>;
-  upstreamKey?: (key: string | undefined) => string | undefined;
+  // Resolves the API key; may prompt. Absent (or resolving undefined) means
+  // an unauthenticated endpoint.
+  auth?: (config: Config) => Promise<string | undefined>;
   fetchLabel: string;
-  // Wrap connection failures in a clean message; absent lets them crash raw.
   connectError?: (host: string) => string;
   emptyError: string;
   roles: BackendDef["roles"];
   // Live context lookup for servers whose /models omits it.
   context?: (host: string, modelId: string) => Promise<number>;
-  credentials: BackendDef<string | undefined>["credentials"];
+  credentials?: BackendDef<string | undefined>["credentials"];
   tag: string;
-  // Register the mixed route only when credentials are usable at launch.
-  routeReady?: (config: Config) => boolean;
+  hasAuth?: (config: Config) => boolean;
   routeKey?: (config: Config) => string | undefined;
 }): BackendDef {
+  const connectError = opts.connectError ?? ((host: string) => `Failed to connect to ${opts.tag} at ${host}`);
   return defineBackend<string | undefined>({
     id: opts.id,
     longFlag: opts.longFlag,
@@ -333,15 +342,15 @@ function openAICompatibleBackend(opts: {
     keys: roleKeys(opts.id),
     host: opts.hostPrompt,
     auth: opts.auth,
+    hasAuth: opts.hasAuth,
     async catalog(config, key) {
       const host = opts.host(config);
       console.log(opts.fetchLabel);
       let models;
       try {
-        models = await fetchOpenAIModels(host, opts.upstreamKey ? opts.upstreamKey(key) : key);
-      } catch (err) {
-        if (opts.connectError) throw new BackendError(opts.connectError(host));
-        throw err;
+        models = await fetchOpenAIModels(host, key);
+      } catch {
+        throw new BackendError(connectError(host));
       }
       if (models.length === 0) {
         throw new BackendError(opts.emptyError);
@@ -350,16 +359,11 @@ function openAICompatibleBackend(opts: {
     },
     roles: opts.roles,
     resolveContext: opts.context ? (modelId, config) => opts.context!(opts.host(config), modelId) : undefined,
-    transport: proxyTransport("Starting proxy...", (config, key) =>
-      startProxy(opts.host(config), opts.upstreamKey ? opts.upstreamKey(key) : key)
-    ),
-    credentials: opts.credentials,
+    transport: proxyTransport("Starting proxy...", (config, key) => startProxy(opts.host(config), key)),
+    credentials: opts.credentials ?? tokenCredentials(opts.id),
     describe: (model, _context, port) => `\nLaunching claude with ${model} (${opts.tag} via proxy :${port})...\n`,
     mixed: {
-      route(config) {
-        if (opts.routeReady && !opts.routeReady(config)) return undefined;
-        return (p, res) => handleOpenAIMessages(p as unknown as OpenAIProxyRequest, res, opts.host(config), opts.routeKey?.(config));
-      },
+      route: (config) => (p, res) => handleOpenAIMessages(p as unknown as OpenAIProxyRequest, res, opts.host(config), opts.routeKey?.(config)),
     },
   });
 }
@@ -378,8 +382,8 @@ export const BACKEND_DEFS: BackendDef[] = [
     helpText: "Use OpenRouter backend",
     pickerLabel: "OpenRouter (multiple models)",
     mixedLabel: "OpenRouter",
-    // Legacy flat keys from the single-backend era; every later backend
-    // follows the `<id>Model` scheme roleKeys derives.
+    // Flat key names are persisted in existing user configs, so they can't
+    // be renamed to the `<id>Model` scheme roleKeys derives.
     keys: { model: "selectedModel", sonnet: "sonnetModel", opus: "opusModel", haiku: "haikuModel" },
     async auth(config) {
       let apiKey = config.openrouterApiKey;
@@ -423,7 +427,8 @@ export const BACKEND_DEFS: BackendDef[] = [
     },
     searchPicker: true,
     validateSaved: false,
-    roles: { message: "Configure role models?", confirmDefault: false, order: ["sonnet", "opus", "haiku"] },
+    hasAuth: (config) => !!config.openrouterApiKey,
+    roles: DEFAULT_ROLES,
     // Catalog ids carry the :exacto suffix when the variant exists, while a
     // saved model may predate it; compare with the suffix stripped on both sides.
     async resolveContext(modelId, _config, models) {
@@ -434,11 +439,8 @@ export const BACKEND_DEFS: BackendDef[] = [
     credentials: (apiKey) => ({ apiKey: "", authToken: apiKey }),
     describe: (model) => `\nLaunching claude with ${model}...\n`,
     mixed: {
-      route(config) {
-        const key = config.openrouterApiKey;
-        if (!key) return undefined;
-        return (p, res) => forwardAnthropic("https://openrouter.ai/api/v1/messages", { Authorization: `Bearer ${key}` }, p, res);
-      },
+      route: (config) => (p, res) =>
+        forwardAnthropic("https://openrouter.ai/api/v1/messages", { Authorization: `Bearer ${config.openrouterApiKey}` }, p, res),
     },
   }),
   defineBackend<void>({
@@ -453,12 +455,12 @@ export const BACKEND_DEFS: BackendDef[] = [
       try {
         models = fetchCodexModels();
       } catch (err) {
-        toBackendError(err);
+        return toBackendError(err);
       }
-      if (models!.length === 0) {
+      if (models.length === 0) {
         throw new BackendError("No Codex models available. Run `codex` once while signed in with ChatGPT.");
       }
-      return models!.map((m) => ({
+      return models.map((m) => ({
         id: m.slug,
         choiceName: `${m.displayName} [${formatContext(m.contextWindow)}]`,
         description: m.slug,
@@ -483,23 +485,20 @@ export const BACKEND_DEFS: BackendDef[] = [
         }
       },
     },
-    pickEffort: true,
+    hasAuth() {
+      try {
+        return fetchCodexModels().length > 0;
+      } catch {
+        return false;
+      }
+    },
     contextFallback: 200000,
     transport: proxyTransport("Starting Codex proxy...", (config) => startCodexProxy(config.codexEffort ?? "medium")),
     credentials: tokenCredentials("codex"),
     describe: (model, context, port, config) =>
       `\nLaunching claude with ${model} @ ${config.codexEffort ?? "medium"} effort, ${formatContext(context)} context (Codex sub via proxy :${port})...\n`,
     mixed: {
-      route(config) {
-        // No Codex login/model cache; codex: models fall through to
-        // Anthropic's model error instead of failing inside the handler.
-        try {
-          fetchCodexModels();
-        } catch {
-          return undefined;
-        }
-        return (p, res) => handleCodexMessages(p as unknown as CodexRequest, res, config.codexEffort ?? "medium");
-      },
+      route: (config) => (p, res) => handleCodexMessages(p as unknown as CodexRequest, res, config.codexEffort ?? "medium"),
       effortSuffix: true,
     },
   }),
@@ -511,17 +510,13 @@ export const BACKEND_DEFS: BackendDef[] = [
     pickerLabel: "Grok (X/SuperGrok subscription)",
     keys: { ...roleKeys("grok"), effort: "grokEffort" },
     auth: () => getGrokAuth().catch(toBackendError),
+    hasAuth: hasGrokAuth,
     async catalog(_config, auth) {
-      let models;
-      try {
-        models = await fetchGrokModels(auth.token);
-      } catch (err) {
-        toBackendError(err);
-      }
-      if (models!.length === 0) {
+      const models = await fetchGrokModels(auth.token).catch(toBackendError);
+      if (models.length === 0) {
         throw new BackendError("No Grok models available. Run `grok` once while signed in.");
       }
-      return models!.map((m) => ({
+      return models.map((m) => ({
         id: m.id,
         choiceName: `${m.id} [${formatContext(m.contextWindow)}]`,
         context: m.contextWindow,
@@ -530,18 +525,13 @@ export const BACKEND_DEFS: BackendDef[] = [
       }));
     },
     roles: SUBSCRIPTION_ROLES,
-    pickEffort: true,
     contextFallback: 200000,
     transport: proxyTransport("Starting Grok proxy...", (config) => startGrokProxy(config.grokEffort)),
     credentials: tokenCredentials("grok"),
     describe: (model, context, port, config) =>
       `\nLaunching claude with ${model}${config.grokEffort ? ` @ ${config.grokEffort} effort` : ""}, ${formatContext(context)} context (Grok sub via proxy :${port})...\n`,
     mixed: {
-      route(config) {
-        // No Grok login; grok: models fall through to Anthropic's model error.
-        if (!hasGrokAuth()) return undefined;
-        return (p, res) => handleGrokMessages(p as unknown as GrokBody, res, config.grokEffort);
-      },
+      route: (config) => (p, res) => handleGrokMessages(p as unknown as GrokBody, res, config.grokEffort),
       effortSuffix: true,
     },
   }),
@@ -552,6 +542,14 @@ export const BACKEND_DEFS: BackendDef[] = [
     helpText: "Use Kimi backend (Kimi Code subscription)",
     pickerLabel: "Kimi (Kimi Code subscription)",
     keys: roleKeys("kimi"),
+    hasAuth() {
+      try {
+        getKimiIdentity();
+        return true;
+      } catch {
+        return false;
+      }
+    },
     async auth() {
       try {
         const auth = await getKimiAuth();
@@ -561,16 +559,11 @@ export const BACKEND_DEFS: BackendDef[] = [
       }
     },
     async catalog(_config, auth) {
-      let models;
-      try {
-        models = await fetchKimiModels(auth.token, identityHeaders(auth.identity));
-      } catch (err) {
-        toBackendError(err);
-      }
-      if (models!.length === 0) {
+      const models = await fetchKimiModels(auth.token, identityHeaders(auth.identity)).catch(toBackendError);
+      if (models.length === 0) {
         throw new BackendError("No Kimi models available. Run `kimi` once while signed in.");
       }
-      return models!.map((m) => ({
+      return models.map((m) => ({
         id: m.id,
         choiceName: m.contextWindow ? `${m.id} [${formatContext(m.contextWindow)}]` : m.id,
         context: m.contextWindow,
@@ -583,13 +576,10 @@ export const BACKEND_DEFS: BackendDef[] = [
     describe: (model, context, port) => `\nLaunching claude with ${model}, ${formatContext(context)} context (Kimi sub via proxy :${port})...\n`,
     mixed: {
       route() {
-        try {
-          const identity = getKimiIdentity();
-          return (p, res) => handleKimiMessages(p as unknown as KimiBody, res, identity);
-        } catch {
-          // No Kimi login; kimi: models fall through to Anthropic's model error.
-          return undefined;
-        }
+        // hasAuth gates registration, so the identity read cannot fail here
+        // short of the credential file vanishing mid-launch.
+        const identity = getKimiIdentity();
+        return (p, res) => handleKimiMessages(p as unknown as KimiBody, res, identity);
       },
       effortSuffix: true,
       // Kimi's catalog exposes no effort levels; the pin is forwarded in
@@ -645,7 +635,8 @@ export const BACKEND_DEFS: BackendDef[] = [
     async auth(config) {
       const isCloud = nimHost(config) === NIM_CLOUD_HOST;
       let apiKey = config.nimApiKey;
-      if (!isCloud) return apiKey || process.env.NVIDIA_API_KEY || "not-used";
+      // Self-hosted NIMs run keyless; undefined means no Authorization header.
+      if (!isCloud) return apiKey || process.env.NVIDIA_API_KEY;
       if (!apiKey && process.env.NVIDIA_API_KEY) {
         const useEnv = await confirm({ message: "Use existing NVIDIA_API_KEY from environment?" });
         if (useEnv) {
@@ -661,15 +652,14 @@ export const BACKEND_DEFS: BackendDef[] = [
       }
       return apiKey;
     },
-    // Self-hosted NIMs run keyless; "not-used" satisfies the proxy's key slot
-    // without sending an Authorization header upstream.
-    upstreamKey: (key) => (key !== "not-used" ? key : undefined),
     fetchLabel: "Fetching NIM models...",
     emptyError: "No models found on NIM endpoint.",
-    roles: { message: "Configure role models?", confirmDefault: false, order: ["sonnet", "opus", "haiku"] },
-    credentials: (apiKey) => ({ apiKey: apiKey! }),
+    roles: DEFAULT_ROLES,
+    // A non-empty ANTHROPIC_API_KEY keeps Claude Code off subscription OAuth
+    // even when the endpoint itself is keyless.
+    credentials: (apiKey) => ({ apiKey: apiKey ?? "not-used" }),
     tag: "NIM",
-    routeReady: (config) => !!(config.nimApiKey || config.nimHost),
+    hasAuth: (config) => !!(config.nimApiKey || config.nimHost),
     routeKey: (config) => config.nimApiKey,
   }),
   openAICompatibleBackend({

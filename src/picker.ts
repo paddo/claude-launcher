@@ -18,21 +18,16 @@ function backChoice(allowBack?: boolean): { name: string; value: string }[] {
   return allowBack ? [{ name: "← Back (backend selection)", value: BACK }] : [];
 }
 
-// Registry order, with the launcher modes anchored: Anthropic first, Mixed
-// after the first two backends. Anthropic and Mixed are launcher modes, not
-// registry backends, so they are interleaved here.
+// Registry order, with the launcher modes anchored by id: Anthropic first,
+// Mixed after Codex. Anthropic and Mixed are launcher modes, not registry
+// backends, so they are interleaved here.
 export async function pickBackend(defs: BackendChoice[], defaultValue?: Backend): Promise<Backend> {
-  const backends = defs.map((d) => ({ name: d.pickerLabel, value: d.id }));
-  return select({
-    message: "Select backend:",
-    default: defaultValue,
-    choices: [
-      { name: "Anthropic (standard)", value: "anthropic" as Backend },
-      ...backends.slice(0, 2),
-      { name: "Mixed (Anthropic native + any backend per role slot)", value: "mixed" as Backend },
-      ...backends.slice(2),
-    ],
-  });
+  const choices = [{ name: "Anthropic (standard)", value: "anthropic" as Backend }];
+  for (const d of defs) {
+    choices.push({ name: d.pickerLabel, value: d.id });
+    if (d.id === "codex") choices.push({ name: "Mixed (Anthropic native + any backend per role slot)", value: "mixed" as Backend });
+  }
+  return select({ message: "Select backend:", default: defaultValue, choices });
 }
 
 // Returns the backend a mixed slot routes to, "claude" to stay on the

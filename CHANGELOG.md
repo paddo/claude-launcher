@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through to Anthropic's model error instead of failing inside the handler.
 - Codex mixed routes honor the configured reasoning effort instead of a
   hardcoded `medium`.
+- Unreachable NIM endpoints report a clean connection error instead of a
+  stack trace.
 
 ## [0.10.0] - 2026-07-20
 
