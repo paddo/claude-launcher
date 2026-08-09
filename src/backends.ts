@@ -38,7 +38,17 @@ export const NIM_CLOUD_HOST = "https://integrate.api.nvidia.com/v1";
 // anything else propagates as a real crash.
 export class BackendError extends Error {}
 
+const toBackendError = (err: unknown): never => {
+  throw new BackendError(err instanceof Error ? err.message : String(err));
+};
+
 type RoleSlot = "sonnet" | "opus" | "haiku";
+
+// Config keys holding plain string values - the only kind the registry may
+// bind (excludes narrower unions like `backend` and non-strings).
+type StringKey = {
+  [K in keyof Config]-?: Config[K] extends string | undefined ? (string extends NonNullable<Config[K]> ? K : never) : never;
+}[keyof Config];
 
 // A is the backend's credential state, produced by auth() and consumed by
 // catalog/transport/credentials. Defs are authored with a concrete A via
@@ -55,18 +65,18 @@ export interface BackendDef<A = unknown> {
   // Label in the mixed-mode slot picker when it differs from pickerLabel.
   mixedLabel?: string;
   keys: {
-    model: keyof Config;
-    sonnet: keyof Config;
-    opus: keyof Config;
-    haiku: keyof Config;
-    effort?: keyof Config;
+    model: StringKey;
+    sonnet: StringKey;
+    opus: StringKey;
+    haiku: StringKey;
+    effort?: StringKey;
   };
   // Acquire credentials; may prompt (env-var offers, OAuth, key input) and
   // persist to config. Absent when the backend needs none up front.
   auth?(config: Config): Promise<A>;
   catalog(config: Config, auth: A): Promise<CatalogModel[]>;
   // Prompt for the server host during interactive setup (LAN servers).
-  host?: { key: keyof Config; default: string; message: string };
+  host?: { key: StringKey; default: string; message: string };
   // Fuzzy search picker instead of a plain select (large catalogs).
   searchPicker?: boolean;
   // Skip the "saved model still in catalog" check before reusing it.
@@ -103,9 +113,19 @@ export interface BackendDef<A = unknown> {
 // an erased def passes the auth value straight back into the same def.
 const defineBackend = <A>(def: BackendDef<A>): BackendDef => def as unknown as BackendDef;
 
-const cfgGet = (config: Config, key: keyof Config): string | undefined => config[key] as string | undefined;
-const cfgSet = (config: Config, key: keyof Config, value: string | undefined): void => {
-  (config as Record<string, unknown>)[key] = value;
+// Backends whose role-model config keys follow the `<id>Model` naming scheme.
+type RoleKeyedBackend = { [I in Backend]: `${I}Model` extends keyof Config ? I : never }[Backend];
+
+const roleKeys = (id: RoleKeyedBackend): BackendDef["keys"] => ({
+  model: `${id}Model` as StringKey,
+  sonnet: `${id}SonnetModel` as StringKey,
+  opus: `${id}OpusModel` as StringKey,
+  haiku: `${id}HaikuModel` as StringKey,
+});
+
+const cfgGet = (config: Config, key: StringKey): string | undefined => config[key];
+const cfgSet = (config: Config, key: StringKey, value: string | undefined): void => {
+  config[key] = value;
 };
 
 export function launchClaude(passthrough: string[], env?: NodeJS.ProcessEnv, onExit?: () => void): void {
@@ -129,6 +149,29 @@ const ROLE_LABELS: Record<RoleSlot, string> = {
   opus: "Opus (complex tasks)",
   haiku: "Haiku (quick/cheap)",
 };
+
+const LOCAL_ROLES: BackendDef["roles"] = {
+  message: "Configure role models? (ensures all requests stay local)",
+  confirmDefault: true,
+  order: ["sonnet", "opus", "haiku"],
+};
+
+const SUBSCRIPTION_ROLES: BackendDef["roles"] = {
+  message: "Use a faster model for lighter roles?",
+  confirmDefault: false,
+  defaultToMain: true,
+  order: ["opus", "sonnet", "haiku"],
+};
+
+const proxyTransport =
+  <A,>(label: string, start: (config: Config, auth: A) => Promise<{ port: number; close: () => void }>) =>
+  async (config: Config, auth: A) => {
+    console.log(label);
+    const proxy = await start(config, auth);
+    return { baseUrl: `http://127.0.0.1:${proxy.port}`, port: proxy.port, close: proxy.close };
+  };
+
+const tokenCredentials = (token: string) => () => ({ apiKey: "", authToken: token });
 
 // The host must be known before the catalog fetch. Forced on the setup
 // signals of a run (-b, or no model saved yet); otherwise prompts only when
@@ -215,6 +258,108 @@ export async function resolveContext(def: BackendDef, modelId: string, config: C
   return (await models()).find((m) => m.id === modelId)?.context ?? 0;
 }
 
+// Local (or LAN) server speaking the Anthropic Messages API natively: Claude
+// Code gets the host as ANTHROPIC_BASE_URL directly, no translation proxy.
+function nativeAnthropicBackend(opts: {
+  id: RoleKeyedBackend;
+  longFlag: string;
+  shortFlag?: string;
+  helpText: string;
+  pickerLabel: string;
+  host: (config: Config) => string;
+  hostPrompt?: BackendDef["host"];
+  catalog: (host: string) => Promise<CatalogModel[]>;
+  context: (host: string, modelId: string) => Promise<number>;
+  tag: string;
+}): BackendDef {
+  return defineBackend<void>({
+    id: opts.id,
+    longFlag: opts.longFlag,
+    shortFlag: opts.shortFlag,
+    helpText: opts.helpText,
+    pickerLabel: opts.pickerLabel,
+    keys: roleKeys(opts.id),
+    host: opts.hostPrompt,
+    catalog: (config) => opts.catalog(opts.host(config)),
+    roles: LOCAL_ROLES,
+    resolveContext: (modelId, config) => opts.context(opts.host(config), modelId),
+    transport: async (config) => ({ baseUrl: opts.host(config) }),
+    credentials: tokenCredentials(opts.id),
+    describe: (model) => `\nLaunching claude with ${model} ${opts.tag}...\n`,
+    mixed: {
+      route: (config) => (p, res) => forwardAnthropic(`${opts.host(config)}/v1/messages`, {}, p, res),
+    },
+  });
+}
+
+// OpenAI-compatible endpoint behind the in-process Anthropic-to-OpenAI
+// translation proxy. The next cloud backend of this shape (Groq, Cerebras,
+// Together, vLLM...) should be one call to this factory plus config keys.
+function openAICompatibleBackend(opts: {
+  id: RoleKeyedBackend;
+  longFlag: string;
+  shortFlag?: string;
+  helpText: string;
+  pickerLabel: string;
+  host: (config: Config) => string;
+  hostPrompt?: BackendDef["host"];
+  // Resolves the API key; may prompt. The upstream key is what's actually
+  // sent; absent means an unauthenticated endpoint.
+  auth?: (config: Config) => Promise<string>;
+  upstreamKey?: (key: string | undefined) => string | undefined;
+  fetchLabel: string;
+  // Wrap connection failures in a clean message; absent lets them crash raw.
+  connectError?: (host: string) => string;
+  emptyError: string;
+  roles: BackendDef["roles"];
+  // Live context lookup for servers whose /models omits it.
+  context?: (host: string, modelId: string) => Promise<number>;
+  credentials: BackendDef<string | undefined>["credentials"];
+  tag: string;
+  // Register the mixed route only when credentials are usable at launch.
+  routeReady?: (config: Config) => boolean;
+  routeKey?: (config: Config) => string | undefined;
+}): BackendDef {
+  return defineBackend<string | undefined>({
+    id: opts.id,
+    longFlag: opts.longFlag,
+    shortFlag: opts.shortFlag,
+    helpText: opts.helpText,
+    pickerLabel: opts.pickerLabel,
+    keys: roleKeys(opts.id),
+    host: opts.hostPrompt,
+    auth: opts.auth,
+    async catalog(config, key) {
+      const host = opts.host(config);
+      console.log(opts.fetchLabel);
+      let models;
+      try {
+        models = await fetchOpenAIModels(host, opts.upstreamKey ? opts.upstreamKey(key) : key);
+      } catch (err) {
+        if (opts.connectError) throw new BackendError(opts.connectError(host));
+        throw err;
+      }
+      if (models.length === 0) {
+        throw new BackendError(opts.emptyError);
+      }
+      return models.map((m) => ({ id: m.id, choiceName: m.id, context: openAIModelContext(m) }));
+    },
+    roles: opts.roles,
+    resolveContext: opts.context ? (modelId, config) => opts.context!(opts.host(config), modelId) : undefined,
+    transport: proxyTransport("Starting proxy...", (config, key) =>
+      startProxy(opts.host(config), opts.upstreamKey ? opts.upstreamKey(key) : key)
+    ),
+    credentials: opts.credentials,
+    describe: (model, _context, port) => `\nLaunching claude with ${model} (${opts.tag} via proxy :${port})...\n`,
+    mixed: {
+      route(config) {
+        if (opts.routeReady && !opts.routeReady(config)) return undefined;
+        return (p, res) => handleOpenAIMessages(p as unknown as OpenAIProxyRequest, res, opts.host(config), opts.routeKey?.(config));
+      },
+    },
+  });
+}
+
 const ollamaHost = (c: Config) => c.ollamaHost || "http://localhost:11434";
 const lmstudioHost = (c: Config) => c.lmstudioHost || "http://localhost:1234/v1";
 const nimHost = (c: Config) => c.nimHost || NIM_CLOUD_HOST;
@@ -229,6 +374,8 @@ export const BACKEND_DEFS: BackendDef[] = [
     helpText: "Use OpenRouter backend",
     pickerLabel: "OpenRouter (multiple models)",
     mixedLabel: "OpenRouter",
+    // Legacy flat keys from the single-backend era; every later backend
+    // follows the `<id>Model` scheme roleKeys derives.
     keys: { model: "selectedModel", sonnet: "sonnetModel", opus: "opusModel", haiku: "haikuModel" },
     async auth(config) {
       let apiKey = config.openrouterApiKey;
@@ -296,18 +443,18 @@ export const BACKEND_DEFS: BackendDef[] = [
     shortFlag: "-c",
     helpText: "Use Codex backend (ChatGPT subscription)",
     pickerLabel: "Codex (ChatGPT subscription)",
-    keys: { model: "codexModel", sonnet: "codexSonnetModel", opus: "codexOpusModel", haiku: "codexHaikuModel", effort: "codexEffort" },
+    keys: { ...roleKeys("codex"), effort: "codexEffort" },
     async catalog() {
       let models;
       try {
         models = fetchCodexModels();
       } catch (err) {
-        throw new BackendError(err instanceof Error ? err.message : String(err));
+        toBackendError(err);
       }
-      if (models.length === 0) {
+      if (models!.length === 0) {
         throw new BackendError("No Codex models available. Run `codex` once while signed in with ChatGPT.");
       }
-      return models.map((m) => ({
+      return models!.map((m) => ({
         id: m.slug,
         choiceName: `${m.displayName} [${formatContext(m.contextWindow)}]`,
         description: m.slug,
@@ -334,12 +481,8 @@ export const BACKEND_DEFS: BackendDef[] = [
     },
     pickEffort: true,
     contextFallback: 200000,
-    async transport(config) {
-      console.log("Starting Codex proxy...");
-      const proxy = await startCodexProxy(config.codexEffort ?? "medium");
-      return { baseUrl: `http://127.0.0.1:${proxy.port}`, port: proxy.port, close: proxy.close };
-    },
-    credentials: () => ({ apiKey: "", authToken: "codex" }),
+    transport: proxyTransport("Starting Codex proxy...", (config) => startCodexProxy(config.codexEffort ?? "medium")),
+    credentials: tokenCredentials("codex"),
     describe: (model, context, port, config) =>
       `\nLaunching claude with ${model} @ ${config.codexEffort ?? "medium"} effort, ${formatContext(context)} context (Codex sub via proxy :${port})...\n`,
     mixed: {
@@ -352,25 +495,19 @@ export const BACKEND_DEFS: BackendDef[] = [
     shortFlag: "-g",
     helpText: "Use Grok backend (X/SuperGrok subscription)",
     pickerLabel: "Grok (X/SuperGrok subscription)",
-    keys: { model: "grokModel", sonnet: "grokSonnetModel", opus: "grokOpusModel", haiku: "grokHaikuModel", effort: "grokEffort" },
-    async auth() {
-      try {
-        return await getGrokAuth();
-      } catch (err) {
-        throw new BackendError(err instanceof Error ? err.message : String(err));
-      }
-    },
+    keys: { ...roleKeys("grok"), effort: "grokEffort" },
+    auth: () => getGrokAuth().catch(toBackendError),
     async catalog(_config, auth) {
       let models;
       try {
         models = await fetchGrokModels(auth.token);
       } catch (err) {
-        throw new BackendError(err instanceof Error ? err.message : String(err));
+        toBackendError(err);
       }
-      if (models.length === 0) {
+      if (models!.length === 0) {
         throw new BackendError("No Grok models available. Run `grok` once while signed in.");
       }
-      return models.map((m) => ({
+      return models!.map((m) => ({
         id: m.id,
         choiceName: `${m.id} [${formatContext(m.contextWindow)}]`,
         context: m.contextWindow,
@@ -378,15 +515,11 @@ export const BACKEND_DEFS: BackendDef[] = [
         defaultEffort: m.defaultEffort,
       }));
     },
-    roles: { message: "Use a faster model for lighter roles?", confirmDefault: false, defaultToMain: true, order: ["opus", "sonnet", "haiku"] },
+    roles: SUBSCRIPTION_ROLES,
     pickEffort: true,
     contextFallback: 200000,
-    async transport(config) {
-      console.log("Starting Grok proxy...");
-      const proxy = await startGrokProxy(config.grokEffort);
-      return { baseUrl: `http://127.0.0.1:${proxy.port}`, port: proxy.port, close: proxy.close };
-    },
-    credentials: () => ({ apiKey: "", authToken: "grok" }),
+    transport: proxyTransport("Starting Grok proxy...", (config) => startGrokProxy(config.grokEffort)),
+    credentials: tokenCredentials("grok"),
     describe: (model, context, port, config) =>
       `\nLaunching claude with ${model}${config.grokEffort ? ` @ ${config.grokEffort} effort` : ""}, ${formatContext(context)} context (Grok sub via proxy :${port})...\n`,
     mixed: {
@@ -399,13 +532,13 @@ export const BACKEND_DEFS: BackendDef[] = [
     shortFlag: "-k",
     helpText: "Use Kimi backend (Kimi Code subscription)",
     pickerLabel: "Kimi (Kimi Code subscription)",
-    keys: { model: "kimiModel", sonnet: "kimiSonnetModel", opus: "kimiOpusModel", haiku: "kimiHaikuModel" },
+    keys: roleKeys("kimi"),
     async auth() {
       try {
         const auth = await getKimiAuth();
         return { token: auth.token, identity: getKimiIdentity() };
       } catch (err) {
-        throw new BackendError(err instanceof Error ? err.message : String(err));
+        return toBackendError(err);
       }
     },
     async catalog(_config, auth) {
@@ -413,25 +546,21 @@ export const BACKEND_DEFS: BackendDef[] = [
       try {
         models = await fetchKimiModels(auth.token, identityHeaders(auth.identity));
       } catch (err) {
-        throw new BackendError(err instanceof Error ? err.message : String(err));
+        toBackendError(err);
       }
-      if (models.length === 0) {
+      if (models!.length === 0) {
         throw new BackendError("No Kimi models available. Run `kimi` once while signed in.");
       }
-      return models.map((m) => ({
+      return models!.map((m) => ({
         id: m.id,
         choiceName: m.contextWindow ? `${m.id} [${formatContext(m.contextWindow)}]` : m.id,
         context: m.contextWindow,
       }));
     },
-    roles: { message: "Use a faster model for lighter roles?", confirmDefault: false, defaultToMain: true, order: ["opus", "sonnet", "haiku"] },
+    roles: SUBSCRIPTION_ROLES,
     contextFallback: 200000,
-    async transport(_config, auth) {
-      console.log("Starting Kimi proxy...");
-      const proxy = await startKimiProxy(auth.identity);
-      return { baseUrl: `http://127.0.0.1:${proxy.port}`, port: proxy.port, close: proxy.close };
-    },
-    credentials: () => ({ apiKey: "", authToken: "kimi" }),
+    transport: proxyTransport("Starting Kimi proxy...", (_config, auth: { identity: KimiIdentity }) => startKimiProxy(auth.identity)),
+    credentials: tokenCredentials("kimi"),
     describe: (model, context, port) => `\nLaunching claude with ${model}, ${formatContext(context)} context (Kimi sub via proxy :${port})...\n`,
     mixed: {
       route() {
@@ -448,15 +577,14 @@ export const BACKEND_DEFS: BackendDef[] = [
       slotEfforts: () => ["low", "medium", "high", "max"],
     },
   }),
-  defineBackend<void>({
+  nativeAnthropicBackend({
     id: "ollama",
     longFlag: "--ollama",
     shortFlag: "-l",
     helpText: "Use Ollama backend (local)",
     pickerLabel: "Ollama (local)",
-    keys: { model: "ollamaModel", sonnet: "ollamaSonnetModel", opus: "ollamaOpusModel", haiku: "ollamaHaikuModel" },
-    async catalog(config) {
-      const host = ollamaHost(config);
+    host: ollamaHost,
+    async catalog(host) {
       console.log("Checking Ollama...");
       let allModels;
       try {
@@ -484,22 +612,16 @@ export const BACKEND_DEFS: BackendDef[] = [
         context: 0,
       }));
     },
-    roles: { message: "Configure role models? (ensures all requests stay local)", confirmDefault: true, order: ["sonnet", "opus", "haiku"] },
-    resolveContext: (modelId, config) => getOllamaContext(ollamaHost(config), modelId),
-    transport: async (config) => ({ baseUrl: ollamaHost(config) }),
-    credentials: () => ({ apiKey: "", authToken: "ollama" }),
-    describe: (model) => `\nLaunching claude with ${model} (Ollama)...\n`,
-    mixed: {
-      route: (config) => (p, res) => forwardAnthropic(`${ollamaHost(config)}/v1/messages`, {}, p, res),
-    },
+    context: getOllamaContext,
+    tag: "(Ollama)",
   }),
-  defineBackend<string>({
+  openAICompatibleBackend({
     id: "nim",
     longFlag: "--nim",
     shortFlag: "-n",
     helpText: "Use NVIDIA NIM backend",
     pickerLabel: "NIM (NVIDIA)",
-    keys: { model: "nimModel", sonnet: "nimSonnetModel", opus: "nimOpusModel", haiku: "nimHaikuModel" },
+    host: nimHost,
     async auth(config) {
       const isCloud = nimHost(config) === NIM_CLOUD_HOST;
       let apiKey = config.nimApiKey;
@@ -519,73 +641,40 @@ export const BACKEND_DEFS: BackendDef[] = [
       }
       return apiKey;
     },
-    async catalog(config, apiKey) {
-      console.log("Fetching NIM models...");
-      const models = await fetchOpenAIModels(nimHost(config), apiKey !== "not-used" ? apiKey : undefined);
-      if (models.length === 0) {
-        throw new BackendError("No models found on NIM endpoint.");
-      }
-      return models.map((m) => ({ id: m.id, choiceName: m.id, context: openAIModelContext(m) }));
-    },
+    // Self-hosted NIMs run keyless; "not-used" satisfies the proxy's key slot
+    // without sending an Authorization header upstream.
+    upstreamKey: (key) => (key !== "not-used" ? key : undefined),
+    fetchLabel: "Fetching NIM models...",
+    emptyError: "No models found on NIM endpoint.",
     roles: { message: "Configure role models?", confirmDefault: false, order: ["sonnet", "opus", "haiku"] },
-    async transport(config, apiKey) {
-      console.log("Starting proxy...");
-      const proxy = await startProxy(nimHost(config), apiKey);
-      return { baseUrl: `http://127.0.0.1:${proxy.port}`, port: proxy.port, close: proxy.close };
-    },
-    credentials: (apiKey) => ({ apiKey }),
-    describe: (model, _context, port) => `\nLaunching claude with ${model} (NIM via proxy :${port})...\n`,
-    mixed: {
-      route(config) {
-        if (!config.nimApiKey && !config.nimHost) return undefined;
-        return (p, res) => handleOpenAIMessages(p as unknown as OpenAIProxyRequest, res, nimHost(config), config.nimApiKey);
-      },
-    },
+    credentials: (apiKey) => ({ apiKey: apiKey! }),
+    tag: "NIM",
+    routeReady: (config) => !!(config.nimApiKey || config.nimHost),
+    routeKey: (config) => config.nimApiKey,
   }),
-  defineBackend<void>({
+  openAICompatibleBackend({
     id: "lmstudio",
     longFlag: "--lmstudio",
     shortFlag: "-s",
     helpText: "Use LM Studio backend (local)",
     pickerLabel: "LM Studio (local)",
-    keys: { model: "lmstudioModel", sonnet: "lmstudioSonnetModel", opus: "lmstudioOpusModel", haiku: "lmstudioHaikuModel" },
-    async catalog(config) {
-      const host = lmstudioHost(config);
-      console.log("Fetching LM Studio models...");
-      let models;
-      try {
-        models = await fetchOpenAIModels(host);
-      } catch {
-        throw new BackendError(`Failed to connect to LM Studio at ${host}\nMake sure the LM Studio server is running.`);
-      }
-      if (models.length === 0) {
-        throw new BackendError("No models found. Load a model in LM Studio first.");
-      }
-      return models.map((m) => ({ id: m.id, choiceName: m.id, context: 0 }));
-    },
-    roles: { message: "Configure role models? (ensures all requests stay local)", confirmDefault: true, order: ["sonnet", "opus", "haiku"] },
-    resolveContext: (modelId, config) => getLmStudioContext(lmstudioHost(config), modelId),
-    async transport(config) {
-      console.log("Starting proxy...");
-      const proxy = await startProxy(lmstudioHost(config));
-      return { baseUrl: `http://127.0.0.1:${proxy.port}`, port: proxy.port, close: proxy.close };
-    },
-    credentials: () => ({ apiKey: "", authToken: "lmstudio" }),
-    describe: (model, _context, port) => `\nLaunching claude with ${model} (LM Studio via proxy :${port})...\n`,
-    mixed: {
-      route: (config) => (p, res) =>
-        handleOpenAIMessages(p as unknown as OpenAIProxyRequest, res, lmstudioHost(config)),
-    },
+    host: lmstudioHost,
+    fetchLabel: "Fetching LM Studio models...",
+    connectError: (host) => `Failed to connect to LM Studio at ${host}\nMake sure the LM Studio server is running.`,
+    emptyError: "No models found. Load a model in LM Studio first.",
+    roles: LOCAL_ROLES,
+    context: getLmStudioContext,
+    credentials: tokenCredentials("lmstudio"),
+    tag: "LM Studio",
   }),
-  defineBackend<void>({
+  nativeAnthropicBackend({
     id: "llamacpp",
     longFlag: "--llamacpp",
     helpText: "Use llama.cpp backend (local)",
     pickerLabel: "llama.cpp (local)",
-    keys: { model: "llamacppModel", sonnet: "llamacppSonnetModel", opus: "llamacppOpusModel", haiku: "llamacppHaikuModel" },
-    host: { key: "llamacppHost", default: LLAMACPP_DEFAULT_HOST, message: "llama-server URL (server root, no /v1):" },
-    async catalog(config) {
-      const host = llamacppHost(config);
+    host: llamacppHost,
+    hostPrompt: { key: "llamacppHost", default: LLAMACPP_DEFAULT_HOST, message: "llama-server URL (server root, no /v1):" },
+    async catalog(host) {
       console.log("Fetching llama.cpp models...");
       let models;
       try {
@@ -598,17 +687,8 @@ export const BACKEND_DEFS: BackendDef[] = [
       }
       return models.map((m) => ({ id: m.id, choiceName: m.id, context: 0 }));
     },
-    roles: { message: "Configure role models? (ensures all requests stay local)", confirmDefault: true, order: ["sonnet", "opus", "haiku"] },
-    resolveContext: (_modelId, config) => getLlamaCppContext(llamacppHost(config)),
-    // llama-server implements the Anthropic Messages API natively, so Claude
-    // Code talks to it directly - no translation proxy.
-    transport: async (config) => ({ baseUrl: llamacppHost(config) }),
-    credentials: () => ({ apiKey: "", authToken: "llamacpp" }),
-    describe: (model) => `\nLaunching claude with ${model} (llama.cpp)...\n`,
-    mixed: {
-      route: (config) => (p, res) =>
-        forwardAnthropic(`${llamacppHost(config)}/v1/messages`, {}, p, res),
-    },
+    context: (host) => getLlamaCppContext(host),
+    tag: "(llama.cpp)",
   }),
 ];
 
