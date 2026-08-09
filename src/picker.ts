@@ -18,24 +18,19 @@ function backChoice(allowBack?: boolean): { name: string; value: string }[] {
   return allowBack ? [{ name: "← Back (backend selection)", value: BACK }] : [];
 }
 
-// Fixed presentation order; Anthropic and Mixed are launcher modes, not
+// Registry order, with the launcher modes anchored: Anthropic first, Mixed
+// after the first two backends. Anthropic and Mixed are launcher modes, not
 // registry backends, so they are interleaved here.
 export async function pickBackend(defs: BackendChoice[], defaultValue?: Backend): Promise<Backend> {
-  const label = (id: string) => defs.find((d) => d.id === id)!.pickerLabel;
+  const backends = defs.map((d) => ({ name: d.pickerLabel, value: d.id }));
   return select({
     message: "Select backend:",
     default: defaultValue,
     choices: [
       { name: "Anthropic (standard)", value: "anthropic" as Backend },
-      { name: label("openrouter"), value: "openrouter" as Backend },
-      { name: label("codex"), value: "codex" as Backend },
+      ...backends.slice(0, 2),
       { name: "Mixed (Anthropic native + any backend per role slot)", value: "mixed" as Backend },
-      { name: label("grok"), value: "grok" as Backend },
-      { name: label("kimi"), value: "kimi" as Backend },
-      { name: label("ollama"), value: "ollama" as Backend },
-      { name: label("nim"), value: "nim" as Backend },
-      { name: label("lmstudio"), value: "lmstudio" as Backend },
-      { name: label("llamacpp"), value: "llamacpp" as Backend },
+      ...backends.slice(2),
     ],
   });
 }
@@ -43,17 +38,20 @@ export async function pickBackend(defs: BackendChoice[], defaultValue?: Backend)
 // Returns the backend a mixed slot routes to, "claude" to stay on the
 // Anthropic subscription default, or BACK to exit to the backend selection.
 export async function pickMixedBackend(defs: BackendChoice[], label: string, current?: string, allowBack?: boolean): Promise<Backend | "claude" | typeof BACK> {
-  const order: Backend[] = ["codex", "grok", "kimi", "openrouter", "ollama", "nim", "lmstudio", "llamacpp"];
+  // Subscription backends first; registry entries not listed here follow in
+  // registry order so a new backend is never invisible.
+  const preferred: Backend[] = ["codex", "grok", "kimi", "openrouter"];
+  const ordered = [
+    ...preferred.flatMap((id) => defs.filter((d) => d.id === id)),
+    ...defs.filter((d) => !preferred.includes(d.id)),
+  ];
   return select({
     message: `${label} backend:`,
     default: (current ?? "claude") as Backend | "claude",
     choices: [
       ...(backChoice(allowBack) as { name: string; value: Backend | "claude" }[]),
       { name: "Claude (Anthropic subscription)", value: "claude" as const },
-      ...order.map((id) => {
-        const def = defs.find((d) => d.id === id)!;
-        return { name: def.mixedLabel ?? def.pickerLabel, value: id };
-      }),
+      ...ordered.map((d) => ({ name: d.mixedLabel ?? d.pickerLabel, value: d.id })),
     ],
   });
 }

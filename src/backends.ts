@@ -52,7 +52,10 @@ type RoleSlot = "sonnet" | "opus" | "haiku";
 export interface BackendDef {
   id: Backend;
   longFlag: string;
-  shortFlag: string;
+  // Omitted when every safe letter is taken: claude's own short flags (-p
+  // print, -r resume) pass through to the launched CLI and must not be
+  // shadowed by new backends.
+  shortFlag?: string;
   helpText: string;
   pickerLabel: string;
   // Label in the mixed-mode slot picker when it differs from pickerLabel.
@@ -81,8 +84,10 @@ export interface BackendDef {
     preConfigure?(config: Config, models: CatalogModel[]): void;
   };
   pickEffort?: boolean;
-  // Context window for the chosen model; defaults to the catalog entry.
-  resolveContext?(models: CatalogModel[], modelId: string, config: Config): Promise<number>;
+  // Context window for the chosen model; defaults to a catalog lookup. The
+  // catalog is passed lazily so backends that resolve context from the server
+  // or config alone never force a catalog load (mixed launches).
+  resolveContext?(modelId: string, config: Config, models: () => Promise<CatalogModel[]>): Promise<number>;
   // Applied when the resolved context is 0/unknown (subscription backends
   // assume the standard 200k window rather than no override).
   contextFallback?: number;
@@ -124,15 +129,19 @@ const ROLE_LABELS: Record<RoleSlot, string> = {
   haiku: "Haiku (quick/cheap)",
 };
 
+// The host must be known before the catalog fetch. Forced on the setup
+// signals of a run (-b, or no model saved yet); otherwise prompts only when
+// no host is stored (e.g. first mixed-slot route to this backend).
+export async function ensureHost(def: BackendDef, config: Config, force: boolean): Promise<void> {
+  if (!def.host || (!force && cfgGet(config, def.host.key))) return;
+  const current = cfgGet(config, def.host.key);
+  const host = await input({ message: def.host.message, default: current || def.host.default });
+  cfgSet(config, def.host.key, host.replace(/\/+$/, ""));
+  saveConfig(config);
+}
+
 export async function runBackend(def: BackendDef, config: Config, interactive: boolean, passthrough: string[]): Promise<"back" | void> {
-  // The host must be known before the catalog fetch, so this prompts on the
-  // pre-fetch signals of a setup run: -b, or no model saved yet.
-  if (def.host && (interactive || !cfgGet(config, def.keys.model))) {
-    const current = cfgGet(config, def.host.key);
-    const host = await input({ message: def.host.message, default: current || def.host.default });
-    cfgSet(config, def.host.key, host.replace(/\/+$/, ""));
-    saveConfig(config);
-  }
+  await ensureHost(def, config, interactive || !cfgGet(config, def.keys.model));
 
   let cat: Catalog;
   try {
@@ -161,7 +170,7 @@ export async function runBackend(def: BackendDef, config: Config, interactive: b
     const configureRoles = await confirm({ message: def.roles.message, default: def.roles.confirmDefault });
     if (configureRoles) {
       for (const role of def.roles.order) {
-        cfgSet(config, K[role], await pickCatalogModel(cat.models, { current: cfgGet(config, K[role]), label: ROLE_LABELS[role] }));
+        cfgSet(config, K[role], await pickCatalogModel(cat.models, { current: cfgGet(config, K[role]), label: ROLE_LABELS[role], search: def.searchPicker }));
       }
     }
 
@@ -174,7 +183,7 @@ export async function runBackend(def: BackendDef, config: Config, interactive: b
   }
   saveConfig(config);
 
-  const context = (await resolveContext(def, cat.models, model!, config)) || (def.contextFallback ?? 0);
+  const context = (await resolveContext(def, model!, config, async () => cat.models)) || (def.contextFallback ?? 0);
   const transport = await def.transport(config, cat);
   const creds = def.credentials(cat);
   const env: NodeJS.ProcessEnv = {
@@ -193,10 +202,16 @@ export async function runBackend(def: BackendDef, config: Config, interactive: b
   launchClaude(passthrough, env, transport.close);
 }
 
-export async function resolveContext(def: BackendDef, models: CatalogModel[], modelId: string, config: Config): Promise<number> {
-  if (def.resolveContext) return def.resolveContext(models, modelId, config);
-  return models.find((m) => m.id === modelId)?.context ?? 0;
+export async function resolveContext(def: BackendDef, modelId: string, config: Config, models: () => Promise<CatalogModel[]>): Promise<number> {
+  if (def.resolveContext) return def.resolveContext(modelId, config, models);
+  return (await models()).find((m) => m.id === modelId)?.context ?? 0;
 }
+
+const ollamaHost = (c: Config) => c.ollamaHost || "http://localhost:11434";
+const lmstudioHost = (c: Config) => c.lmstudioHost || "http://localhost:1234/v1";
+const nimHost = (c: Config) => c.nimHost || NIM_CLOUD_HOST;
+const LLAMACPP_DEFAULT_HOST = "http://localhost:8080";
+const llamacppHost = (c: Config) => c.llamacppHost || LLAMACPP_DEFAULT_HOST;
 
 export const BACKEND_DEFS: BackendDef[] = [
   {
@@ -250,9 +265,11 @@ export const BACKEND_DEFS: BackendDef[] = [
     searchPicker: true,
     validateSaved: false,
     roles: { message: "Configure role models?", confirmDefault: false, order: ["sonnet", "opus", "haiku"] },
-    async resolveContext(models, modelId) {
+    // Catalog ids carry the :exacto suffix when the variant exists, while a
+    // saved model may predate it; compare with the suffix stripped on both sides.
+    async resolveContext(modelId, _config, models) {
       const baseId = modelId.replace(/:exacto$/, "");
-      return models.find((m) => m.id === modelId || m.id === baseId)?.context ?? 0;
+      return (await models()).find((m) => m.id.replace(/:exacto$/, "") === baseId)?.context ?? 0;
     },
     transport: async () => ({ baseUrl: "https://openrouter.ai/api" }),
     credentials: (cat) => ({ apiKey: "", authToken: cat.authKey }),
@@ -427,7 +444,7 @@ export const BACKEND_DEFS: BackendDef[] = [
     pickerLabel: "Ollama (local)",
     keys: { model: "ollamaModel", sonnet: "ollamaSonnetModel", opus: "ollamaOpusModel", haiku: "ollamaHaikuModel" },
     async loadCatalog(config) {
-      const host = config.ollamaHost || "http://localhost:11434";
+      const host = ollamaHost(config);
       console.log("Checking Ollama...");
       let allModels;
       try {
@@ -458,12 +475,12 @@ export const BACKEND_DEFS: BackendDef[] = [
       };
     },
     roles: { message: "Configure role models? (ensures all requests stay local)", confirmDefault: true, order: ["sonnet", "opus", "haiku"] },
-    resolveContext: (_models, modelId, config) => getOllamaContext(config.ollamaHost || "http://localhost:11434", modelId),
-    transport: async (config) => ({ baseUrl: config.ollamaHost || "http://localhost:11434" }),
+    resolveContext: (modelId, config) => getOllamaContext(ollamaHost(config), modelId),
+    transport: async (config) => ({ baseUrl: ollamaHost(config) }),
     credentials: () => ({ apiKey: "", authToken: "ollama" }),
     describe: (model) => `\nLaunching claude with ${model} (Ollama)...\n`,
     mixed: {
-      route: (config) => (p, res) => forwardAnthropic(`${config.ollamaHost || "http://localhost:11434"}/v1/messages`, {}, p, res),
+      route: (config) => (p, res) => forwardAnthropic(`${ollamaHost(config)}/v1/messages`, {}, p, res),
     },
   },
   {
@@ -474,7 +491,7 @@ export const BACKEND_DEFS: BackendDef[] = [
     pickerLabel: "NIM (NVIDIA)",
     keys: { model: "nimModel", sonnet: "nimSonnetModel", opus: "nimOpusModel", haiku: "nimHaikuModel" },
     async loadCatalog(config) {
-      const host = config.nimHost || NIM_CLOUD_HOST;
+      const host = nimHost(config);
       const isCloud = host === NIM_CLOUD_HOST;
       let apiKey = config.nimApiKey;
       if (isCloud) {
@@ -507,7 +524,7 @@ export const BACKEND_DEFS: BackendDef[] = [
     roles: { message: "Configure role models?", confirmDefault: false, order: ["sonnet", "opus", "haiku"] },
     async transport(config, cat) {
       console.log("Starting proxy...");
-      const proxy = await startProxy(config.nimHost || NIM_CLOUD_HOST, cat.authKey!);
+      const proxy = await startProxy(nimHost(config), cat.authKey!);
       return { baseUrl: `http://127.0.0.1:${proxy.port}`, port: proxy.port, close: proxy.close };
     },
     credentials: (cat) => ({ apiKey: cat.authKey! }),
@@ -515,7 +532,7 @@ export const BACKEND_DEFS: BackendDef[] = [
     mixed: {
       route(config) {
         if (!config.nimApiKey && !config.nimHost) return undefined;
-        return (p, res) => handleOpenAIMessages(p as unknown as OpenAIProxyRequest, res, config.nimHost || NIM_CLOUD_HOST, config.nimApiKey);
+        return (p, res) => handleOpenAIMessages(p as unknown as OpenAIProxyRequest, res, nimHost(config), config.nimApiKey);
       },
     },
   },
@@ -527,7 +544,7 @@ export const BACKEND_DEFS: BackendDef[] = [
     pickerLabel: "LM Studio (local)",
     keys: { model: "lmstudioModel", sonnet: "lmstudioSonnetModel", opus: "lmstudioOpusModel", haiku: "lmstudioHaikuModel" },
     async loadCatalog(config) {
-      const host = config.lmstudioHost || "http://localhost:1234/v1";
+      const host = lmstudioHost(config);
       console.log("Fetching LM Studio models...");
       let models;
       try {
@@ -541,29 +558,28 @@ export const BACKEND_DEFS: BackendDef[] = [
       return { models: models.map((m) => ({ id: m.id, choiceName: m.id, context: 0 })) };
     },
     roles: { message: "Configure role models? (ensures all requests stay local)", confirmDefault: true, order: ["sonnet", "opus", "haiku"] },
-    resolveContext: (_models, modelId, config) => getLmStudioContext(config.lmstudioHost || "http://localhost:1234/v1", modelId),
+    resolveContext: (modelId, config) => getLmStudioContext(lmstudioHost(config), modelId),
     async transport(config) {
       console.log("Starting proxy...");
-      const proxy = await startProxy(config.lmstudioHost || "http://localhost:1234/v1");
+      const proxy = await startProxy(lmstudioHost(config));
       return { baseUrl: `http://127.0.0.1:${proxy.port}`, port: proxy.port, close: proxy.close };
     },
     credentials: () => ({ apiKey: "", authToken: "lmstudio" }),
     describe: (model, _context, port) => `\nLaunching claude with ${model} (LM Studio via proxy :${port})...\n`,
     mixed: {
       route: (config) => (p, res) =>
-        handleOpenAIMessages(p as unknown as OpenAIProxyRequest, res, config.lmstudioHost || "http://localhost:1234/v1"),
+        handleOpenAIMessages(p as unknown as OpenAIProxyRequest, res, lmstudioHost(config)),
     },
   },
   {
     id: "llamacpp",
     longFlag: "--llamacpp",
-    shortFlag: "-p",
     helpText: "Use llama.cpp backend (local)",
     pickerLabel: "llama.cpp (local)",
     keys: { model: "llamacppModel", sonnet: "llamacppSonnetModel", opus: "llamacppOpusModel", haiku: "llamacppHaikuModel" },
-    host: { key: "llamacppHost", default: "http://localhost:8080", message: "llama-server URL (server root, no /v1):" },
+    host: { key: "llamacppHost", default: LLAMACPP_DEFAULT_HOST, message: "llama-server URL (server root, no /v1):" },
     async loadCatalog(config) {
-      const host = config.llamacppHost || "http://localhost:8080";
+      const host = llamacppHost(config);
       console.log("Fetching llama.cpp models...");
       let models;
       try {
@@ -577,15 +593,15 @@ export const BACKEND_DEFS: BackendDef[] = [
       return { models: models.map((m) => ({ id: m.id, choiceName: m.id, context: 0 })) };
     },
     roles: { message: "Configure role models? (ensures all requests stay local)", confirmDefault: true, order: ["sonnet", "opus", "haiku"] },
-    resolveContext: (_models, _modelId, config) => getLlamaCppContext(config.llamacppHost || "http://localhost:8080"),
+    resolveContext: (_modelId, config) => getLlamaCppContext(llamacppHost(config)),
     // llama-server implements the Anthropic Messages API natively, so Claude
     // Code talks to it directly - no translation proxy.
-    transport: async (config) => ({ baseUrl: config.llamacppHost || "http://localhost:8080" }),
+    transport: async (config) => ({ baseUrl: llamacppHost(config) }),
     credentials: () => ({ apiKey: "", authToken: "llamacpp" }),
     describe: (model) => `\nLaunching claude with ${model} (llama.cpp)...\n`,
     mixed: {
       route: (config) => (p, res) =>
-        forwardAnthropic(`${config.llamacppHost || "http://localhost:8080"}/v1/messages`, {}, p, res),
+        forwardAnthropic(`${llamacppHost(config)}/v1/messages`, {}, p, res),
     },
   },
 ];

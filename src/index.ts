@@ -4,7 +4,7 @@ import { formatContext } from "./models";
 import { pickBackend, pickMixedBackend, pickSlotEffort, pickCatalogModel, BACK } from "./picker";
 import { login } from "./auth";
 import { startMixedProxy, type MixedHandler } from "./mixed-proxy";
-import { BACKEND_DEFS, defById, runBackend, resolveContext, launchClaude, contextOverrideEnv, type Catalog } from "./backends";
+import { BACKEND_DEFS, defById, runBackend, resolveContext, ensureHost, launchClaude, contextOverrideEnv, type Catalog } from "./backends";
 
 const args = process.argv.slice(2);
 
@@ -24,7 +24,7 @@ function parseArgs() {
       passthrough.push(arg);
       continue;
     }
-    const def = BACKEND_DEFS.find((d) => arg === d.longFlag || arg === d.shortFlag);
+    const def = BACKEND_DEFS.find((d) => arg === d.longFlag || (d.shortFlag && arg === d.shortFlag));
     if (arg === "--") {
       seenDash = true;
     } else if (def) {
@@ -50,23 +50,17 @@ function parseArgs() {
 }
 
 function showHelp() {
-  const defLine = (id: string) => {
-    const d = defById(id)!;
-    return `  ${d.shortFlag}, ${d.longFlag}`.padEnd(20) + d.helpText;
-  };
+  // Registry order, with the launcher-mode flags (-a, -x) interleaved to
+  // match the backend picker.
+  const defLines = BACKEND_DEFS.map((d) => `  ${d.shortFlag ? `${d.shortFlag}, ` : "    "}${d.longFlag}`.padEnd(20) + d.helpText);
   const options = [
     "  -b, --backend     Pick backend and model interactively",
     "  -m, --model       Alias for -b",
-    defLine("openrouter"),
+    defLines[0],
     "  -a, --anthropic   Use Anthropic backend",
-    defLine("codex"),
+    defLines[1],
     "  -x, --mixed       Use Mixed backend (Anthropic native + any backend per role slot)",
-    defLine("grok"),
-    defLine("kimi"),
-    defLine("ollama"),
-    defLine("nim"),
-    defLine("lmstudio"),
-    defLine("llamacpp"),
+    ...defLines.slice(2),
     "  -h, --help        Show this help",
   ].join("\n");
 
@@ -162,8 +156,9 @@ async function main() {
       if (b === "claude") return undefined;
       const slotDef = defById(b)!;
       const curModel = current && curBackend === b ? current.slice(b.length + 1).replace(/@[^@]*$/, "") : undefined;
+      await ensureHost(slotDef, config, false);
       const cat = await catalogFor(b);
-      const model = await pickCatalogModel(cat.models, { current: curModel, label });
+      const model = await pickCatalogModel(cat.models, { current: curModel, label, search: slotDef.searchPicker });
       // An effort pick is encoded into the slot as "model@effort" so the pin
       // is visible wherever the model name shows (launch line, /model).
       const picked = cat.models.find((m) => m.id === model)!;
@@ -212,11 +207,15 @@ async function main() {
       const mm = mainSlot.slice(mb.length + 1).replace(/@[^@]*$/, "");
       try {
         const mixedDef = defById(mb)!;
-        mainContext = await resolveContext(mixedDef, (await catalogFor(mb)).models, mm, config);
-      } catch {
+        mainContext = await resolveContext(mixedDef, mm, config, async () => (await catalogFor(mb)).models);
+      } catch (err) {
+        // Ctrl-C inside a lazily-loaded catalog's prompts must still abort.
+        if (err instanceof Error && err.name === "ExitPromptError") throw err;
         mainContext = 0;
       }
     }
+    // Lazy catalog loads may have updated config (seenModels, adopted keys).
+    saveConfig(config);
 
     console.log("Starting mixed proxy...");
     const proxy = await startMixedProxy(routes);
