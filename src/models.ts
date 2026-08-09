@@ -2,6 +2,17 @@ import { homedir } from "os";
 import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 
+// Backend-agnostic model shape the pickers and backend registry work with;
+// each backend's loadCatalog normalizes its native catalog into this.
+export interface CatalogModel {
+  id: string;
+  choiceName: string;
+  description?: string;
+  context: number;
+  efforts?: string[];
+  defaultEffort?: string;
+}
+
 export interface OpenRouterModel {
   id: string;
   name: string;
@@ -121,6 +132,20 @@ export async function getLmStudioContext(host: string, modelId: string): Promise
     };
     const model = data.data?.find((m) => m.id === modelId);
     return typeof model?.loaded_context_length === "number" ? model.loaded_context_length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// llama-server's /v1/models reports no context either; /props exposes the
+// per-slot n_ctx actually being served. Returns 0 when unavailable.
+export async function getLlamaCppContext(host: string): Promise<number> {
+  try {
+    const res = await fetch(`${host}/props`);
+    if (!res.ok) return 0;
+    const data = (await res.json()) as { default_generation_settings?: { n_ctx?: number } };
+    const n = data.default_generation_settings?.n_ctx;
+    return typeof n === "number" ? n : 0;
   } catch {
     return 0;
   }

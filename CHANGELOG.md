@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- llama.cpp backend (`--llamacpp`, long-only so claude's `-p`/`--print`
+  still passes through): points Claude Code directly at a
+  `llama-server` instance. llama-server implements the Anthropic Messages API
+  natively, so no translation proxy is involved; the served context window is
+  read from `/props`. Setup prompts for the server URL, so LAN hosts work
+  without editing the config file. Also available as a mixed-mode slot backend
+  (`llamacpp:<model>`).
+
+### Changed
+- Backend launch flows unified behind a declarative registry; adding a
+  backend is now a single entry. Config file format unchanged.
+
+### Fixed
+- Mixed-mode `@effort` suffixes are now only appended and stripped for
+  backends that support the pin (Codex, Grok, Kimi), so slot model ids that
+  legitimately contain `@` (LM Studio quant tags, HF revisions) are no longer
+  truncated with the tail misread as a reasoning effort.
+- Codex and Grok mixed routes now register only when a login is present,
+  matching the other backends: an unauthenticated `/model codex:...` falls
+  through to Anthropic's model error instead of failing inside the handler.
+- Codex mixed routes honor the configured reasoning effort instead of a
+  hardcoded `medium`.
+- Unreachable NIM endpoints report a clean connection error instead of a
+  stack trace.
+
 ## [0.10.0] - 2026-07-20
 
 ### Added

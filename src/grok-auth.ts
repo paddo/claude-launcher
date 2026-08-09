@@ -22,6 +22,10 @@ export interface GrokAuth {
   version: string;
 }
 
+// Cheap launch-time check for route registration; the real token (with
+// refresh) is resolved per request inside the proxy.
+export const hasGrokAuth = (): boolean => existsSync(AUTH_PATH);
+
 function readAuthFile(): { file: GrokAuthFile; entryKey: string } {
   if (!existsSync(AUTH_PATH)) {
     throw new Error("No ~/.grok/auth.json found. Sign in first: run `grok` and log in with your X/SuperGrok account.");
