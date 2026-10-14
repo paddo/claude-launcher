@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-14
+
+### Fixed
+- OpenRouter prompt caching for non-Anthropic models. Claude Code adds a
+  system-role message on most turns, and OpenRouter moves every system
+  message into the provider's system prompt, so the prompt prefix changed
+  on each call and the provider's cache never hit. The OpenRouter backend
+  now runs through a local proxy that appends those messages to the
+  preceding user message. A 6-turn Gemini agent task went from 0 to 89% of
+  input tokens read from cache. Anthropic models are unchanged. Mixed-mode
+  OpenRouter slots get the same fix, and now stop upstream generation when
+  Claude Code cancels a request.
+
 ## [0.11.0] - 2026-08-09
 
 ### Added
