@@ -21,6 +21,16 @@ export async function readJsonBody<T>(req: IncomingMessage, res: ServerResponse)
   }
 }
 
+// Hop-by-hop headers describe one connection, not the message; forwarding
+// them alongside the re-framed body (e.g. transfer-encoding: chunked next to
+// the recomputed content-length) is a protocol violation.
+const HOP_BY_HOP = ["connection", "keep-alive", "transfer-encoding", "te", "upgrade", "proxy-authorization", "proxy-connection"];
+
+export function stripHopByHop<T extends Record<string, unknown>>(headers: T): T {
+  for (const h of HOP_BY_HOP) delete headers[h];
+  return headers;
+}
+
 // Posts a request to an upstream that speaks the Anthropic Messages API
 // natively (OpenRouter, Ollama) and streams the response back.
 export async function forwardAnthropic(url: string, headers: Record<string, string>, parsed: unknown, res: ServerResponse): Promise<void> {

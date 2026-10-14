@@ -25,6 +25,7 @@ import { login } from "./auth";
 import { startProxy, handleOpenAIMessages, type AnthropicRequest as OpenAIProxyRequest } from "./proxy";
 import { startCodexProxy, handleCodexMessages, type AnthropicRequest as CodexRequest } from "./codex-proxy";
 import { forwardAnthropic } from "./proxy-shared";
+import { forwardOpenRouter, startOpenRouterProxy } from "./openrouter-proxy";
 import { getGrokAuth, hasGrokAuth, type GrokAuth } from "./grok-auth";
 import { startGrokProxy, handleGrokMessages, type AnthropicBody as GrokBody } from "./grok-proxy";
 import { getKimiAuth, getKimiIdentity, identityHeaders, type KimiIdentity } from "./kimi-auth";
@@ -435,12 +436,11 @@ export const BACKEND_DEFS: BackendDef[] = [
       const baseId = modelId.replace(/:exacto$/, "");
       return (await models()).find((m) => m.id.replace(/:exacto$/, "") === baseId)?.context ?? 0;
     },
-    transport: async () => ({ baseUrl: "https://openrouter.ai/api" }),
+    transport: proxyTransport("Starting OpenRouter proxy...", () => startOpenRouterProxy()),
     credentials: (apiKey) => ({ apiKey: "", authToken: apiKey }),
-    describe: (model) => `\nLaunching claude with ${model}...\n`,
+    describe: (model, _context, port) => `\nLaunching claude with ${model} (via proxy :${port})...\n`,
     mixed: {
-      route: (config) => (p, res) =>
-        forwardAnthropic("https://openrouter.ai/api/v1/messages", { Authorization: `Bearer ${config.openrouterApiKey}` }, p, res),
+      route: (config) => (p, res) => forwardOpenRouter(config.openrouterApiKey, p, res),
     },
   }),
   defineBackend<void>({

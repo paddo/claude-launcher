@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { request as httpsRequest } from "https";
-import { listenOnRandomPort, writeApiError } from "./proxy-shared";
+import { listenOnRandomPort, stripHopByHop, writeApiError } from "./proxy-shared";
 
 const ANTHROPIC_HOST = "api.anthropic.com";
 
@@ -14,16 +14,6 @@ export type MixedHandler = (parsed: RoutedRequest, res: ServerResponse) => Promi
 export interface MixedRoute {
   handler: MixedHandler;
   effortSuffix?: boolean;
-}
-
-// Hop-by-hop headers describe one connection, not the message; forwarding
-// them alongside the re-framed body (e.g. transfer-encoding: chunked next to
-// the recomputed content-length) is a protocol violation.
-const HOP_BY_HOP = ["connection", "keep-alive", "transfer-encoding", "te", "upgrade", "proxy-authorization", "proxy-connection"];
-
-function stripHopByHop<T extends Record<string, unknown>>(headers: T): T {
-  for (const h of HOP_BY_HOP) delete headers[h];
-  return headers;
 }
 
 // Forwards the request end-to-end so Claude Code's subscription OAuth bearer
