@@ -1,4 +1,6 @@
-import { type IncomingMessage, type Server, type ServerResponse } from "http";
+import { type IncomingMessage, type OutgoingHttpHeaders, type Server, type ServerResponse } from "http";
+import { request as httpsRequest } from "https";
+import { pipeline } from "stream";
 
 // Distinguishes a client abort (connection is gone, nobody to answer - and the
 // stream's async iterator rejection would kill the whole proxy process under
@@ -24,11 +26,37 @@ export async function readJsonBody<T>(req: IncomingMessage, res: ServerResponse)
 // Hop-by-hop headers describe one connection, not the message; forwarding
 // them alongside the re-framed body (e.g. transfer-encoding: chunked next to
 // the recomputed content-length) is a protocol violation.
-const HOP_BY_HOP = ["connection", "keep-alive", "transfer-encoding", "te", "upgrade", "proxy-authorization", "proxy-connection"];
+const HOP_BY_HOP = ["connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade", "proxy-authorization", "proxy-connection"];
 
 export function stripHopByHop<T extends Record<string, unknown>>(headers: T): T {
   for (const h of HOP_BY_HOP) delete headers[h];
   return headers;
+}
+
+// Raw relay, so status, rate-limit headers (retry-after) and the encoded
+// body reach Claude Code exactly as the upstream sent them.
+export function relayRaw(host: string, path: string, method: string, headers: OutgoingHttpHeaders, body: Buffer, res: ServerResponse): void {
+  const upstream = httpsRequest(
+    { hostname: host, path, method, headers: stripHopByHop({ ...headers, host, "content-length": String(body.length) }) },
+    (ur) => {
+      res.writeHead(ur.statusCode ?? 502, stripHopByHop({ ...ur.headers }));
+      // pipeline, not pipe: an upstream drop mid-stream must close the client
+      // connection, or Claude Code waits on a stream that never ends.
+      pipeline(ur, res, () => {});
+    }
+  );
+  upstream.on("error", (err) => {
+    if (res.headersSent) {
+      // Mid-stream failure: an error body would corrupt the SSE stream.
+      res.end();
+      return;
+    }
+    writeApiError(res, 502, err.message);
+  });
+  // Esc in Claude Code closes the client socket; dropping the upstream
+  // request stops the provider generating (and billing) the rest.
+  res.on("close", () => upstream.destroy());
+  upstream.end(body);
 }
 
 // Posts a request to an upstream that speaks the Anthropic Messages API

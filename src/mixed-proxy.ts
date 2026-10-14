@@ -1,6 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
-import { request as httpsRequest } from "https";
-import { listenOnRandomPort, stripHopByHop, writeApiError } from "./proxy-shared";
+import { listenOnRandomPort, relayRaw } from "./proxy-shared";
 
 const ANTHROPIC_HOST = "api.anthropic.com";
 
@@ -19,23 +18,7 @@ export interface MixedRoute {
 // Forwards the request end-to-end so Claude Code's subscription OAuth bearer
 // and anthropic-beta headers reach the API unmodified.
 function passthrough(req: IncomingMessage, body: Buffer, res: ServerResponse): void {
-  const headers = stripHopByHop({ ...req.headers, host: ANTHROPIC_HOST, "content-length": String(body.length) });
-  const upstream = httpsRequest(
-    { hostname: ANTHROPIC_HOST, path: req.url, method: req.method, headers },
-    (ur) => {
-      res.writeHead(ur.statusCode ?? 502, stripHopByHop({ ...ur.headers }));
-      ur.pipe(res);
-    }
-  );
-  upstream.on("error", (err) => {
-    if (res.headersSent) {
-      // Mid-stream failure: an error body would corrupt the SSE stream.
-      res.end();
-      return;
-    }
-    writeApiError(res, 502, err.message);
-  });
-  upstream.end(body);
+  relayRaw(ANTHROPIC_HOST, req.url ?? "/", req.method ?? "GET", req.headers, body, res);
 }
 
 // Routes per request on the model field's "backend:model" prefix; the handler

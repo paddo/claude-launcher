@@ -1,11 +1,10 @@
-import { createServer, type IncomingMessage, type OutgoingHttpHeaders, type ServerResponse } from "http";
-import { request as httpsRequest } from "https";
-import { listenOnRandomPort, stripHopByHop, writeApiError } from "./proxy-shared";
+import { createServer, type IncomingMessage, type ServerResponse } from "http";
+import { listenOnRandomPort, relayRaw, writeApiError } from "./proxy-shared";
 
 const OPENROUTER_HOST = "openrouter.ai";
 
 type TextBlock = { type: "text"; text: string } & Record<string, unknown>;
-type Message = { role: string; content: string | Record<string, unknown>[] };
+type Message = { role: string; content: string | Record<string, unknown>[] | null };
 export type OpenRouterBody = { model?: string; messages?: Message[] } & Record<string, unknown>;
 
 // Claude Code adds a system-role message to the conversation on most turns,
@@ -23,45 +22,16 @@ export function foldSystemMessages(body: OpenRouterBody): void {
       out.push(m);
       continue;
     }
-    const blocks: TextBlock[] = typeof m.content === "string" ? [{ type: "text", text: m.content }] : (m.content as TextBlock[]);
+    const blocks: TextBlock[] = typeof m.content === "string" ? [{ type: "text", text: m.content }] : ((m.content ?? []) as TextBlock[]);
     const prev = out[out.length - 1];
     if (prev?.role === "user") {
-      const content = typeof prev.content === "string" ? [{ type: "text", text: prev.content }] : prev.content;
+      const content = typeof prev.content === "string" ? [{ type: "text", text: prev.content }] : (prev.content ?? []);
       out[out.length - 1] = { ...prev, content: [...content, ...blocks] };
     } else {
       out.push({ role: "user", content: blocks });
     }
   }
   body.messages = out;
-}
-
-// Raw relay, so status, rate-limit headers (retry-after) and the encoded
-// body reach Claude Code exactly as OpenRouter sent them.
-function relay(method: string, path: string, headers: OutgoingHttpHeaders, body: Buffer, res: ServerResponse): void {
-  const upstream = httpsRequest(
-    {
-      hostname: OPENROUTER_HOST,
-      path: `/api${path}`,
-      method,
-      headers: stripHopByHop({ ...headers, host: OPENROUTER_HOST, "content-length": String(body.length) }),
-    },
-    (ur) => {
-      res.writeHead(ur.statusCode ?? 502, stripHopByHop({ ...ur.headers }));
-      ur.pipe(res);
-    }
-  );
-  upstream.on("error", (err) => {
-    if (res.headersSent) {
-      // Mid-stream failure: an error body would corrupt the SSE stream.
-      res.end();
-      return;
-    }
-    writeApiError(res, 502, err.message);
-  });
-  // Esc in Claude Code closes the client socket; dropping the upstream
-  // request stops OpenRouter generating (and billing) the rest.
-  res.on("close", () => upstream.destroy());
-  upstream.end(body);
 }
 
 export async function forwardOpenRouter(apiKey: string | undefined, body: OpenRouterBody, res: ServerResponse): Promise<void> {
@@ -72,7 +42,7 @@ export async function forwardOpenRouter(apiKey: string | undefined, body: OpenRo
     return;
   }
   const headers = { authorization: `Bearer ${apiKey}`, "content-type": "application/json", "anthropic-version": "2023-06-01" };
-  relay("POST", "/v1/messages", headers, Buffer.from(JSON.stringify(body)), res);
+  relayRaw(OPENROUTER_HOST, "/api/v1/messages", "POST", headers, Buffer.from(JSON.stringify(body)), res);
 }
 
 // Claude Code's own headers (Authorization with the OpenRouter key,
@@ -100,7 +70,7 @@ export async function startOpenRouterProxy(): Promise<{ port: number; close: () 
         return;
       }
     }
-    relay(req.method ?? "GET", req.url ?? "/", req.headers, body, res);
+    relayRaw(OPENROUTER_HOST, `/api${req.url ?? "/"}`, req.method ?? "GET", req.headers, body, res);
   });
 
   return listenOnRandomPort(server);
