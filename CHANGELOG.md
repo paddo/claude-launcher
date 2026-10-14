@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-14
+
+### Fixed
+- OpenRouter proxy no longer fails a request with a 400 when Claude Code
+  sends a message with `content: null`.
+- An upstream connection that drops mid-stream now closes the stream to
+  Claude Code instead of leaving it waiting until its own timeout. This
+  applies to the OpenRouter proxy and to mixed-mode Anthropic passthrough,
+  which now share one relay. Mixed-mode passthrough also stops upstream
+  generation when Claude Code cancels a request.
+- A client request with a `Trailer` header no longer crashes the proxy.
+
 ## [0.11.1] - 2026-10-14
 
 ### Fixed
